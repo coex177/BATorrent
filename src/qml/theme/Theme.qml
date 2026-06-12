@@ -210,7 +210,7 @@ QtObject {
     // macOS: secondary windows merge the native titlebar into their own header
     // band (ExpandedClientAreaHint + NoTitleBarBackgroundHint) so the title
     // isn't drawn twice. Off elsewhere until tested per-platform.
-    readonly property bool unifiedChrome: Qt.platform.os === "osx"
+    readonly property bool unifiedChrome: Qt.platform.os === "osx" || Qt.platform.os === "windows"
 
     // ---------- interaction tokens ----------
     // Keyboard-focus ring (accent-tinted, drawn as a border 2px outside the
