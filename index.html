@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BATorrent — the BitTorrent client with a face</title>
+<meta name="description" content="Free, open-source BitTorrent client with automatic cover art, a built-in player with subtitles, and a command palette. Native C++/Qt6 for Windows, macOS and Linux. No ads, no telemetry, MIT.">
+<meta property="og:title" content="BATorrent — the BitTorrent client with a face">
+<meta property="og:description" content="Cover art for your downloads, a player that streams while you torrent, Ctrl+K for everything. Open source, no ads, no telemetry.">
+<meta property="og:image" content="https://mateuscruz19.github.io/BATorrent/assets/shot-grid.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=New+Rocker&family=Archivo:wght@400;500;600;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0c;
+  --bg2: #0e0e10;
+  --panel: #141416;
+  --hair: rgba(255,255,255,.08);
+  --t1: #f3f3f4;
+  --t2: #b4b5ba;
+  --t3: #818288;
+  --red: #e5332b;
+  --red-t: #ec6a64;
+  --grn: #3fb950;
+  --amber: #d99a2b;
+  --sans: "Archivo", sans-serif;
+  --mono: "IBM Plex Mono", monospace;
+  --display: "New Rocker", cursive;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--t1);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+::selection { background: var(--red); color: #fff; }
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--red); }
+
+/* film grain over everything */
+body::after {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none; z-index: 999;
+  opacity: .035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+
+/* ---------- nav ---------- */
+nav {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(10,10,12,.78);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--hair);
+}
+.nav-inner { display: flex; align-items: center; gap: 28px; height: 60px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand img { width: 26px; height: 26px; }
+.wordmark { font-family: var(--display); font-size: 21px; letter-spacing: .5px; }
+.wordmark b { color: var(--red); font-weight: 400; }
+.wordmark span { color: var(--t1); }
+.nav-links { display: flex; gap: 22px; margin-left: auto; }
+.nav-links a { color: var(--t2); text-decoration: none; font-size: 14px; font-weight: 500; transition: color .15s; }
+.nav-links a:hover { color: var(--t1); }
+.nav-star {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--hair); border-radius: 8px;
+  padding: 6px 12px; font-size: 13px; color: var(--t1) !important;
+  font-family: var(--mono);
+  transition: border-color .15s, transform .12s;
+}
+.nav-star:hover { border-color: var(--red); }
+.nav-star:active { transform: scale(.97); }
+
+/* ---------- hero ---------- */
+header {
+  position: relative;
+  padding: 96px 0 64px;
+  text-align: center;
+  overflow: hidden;
+}
+header::before {
+  content: "";
+  position: absolute; inset: -40% -20% auto;
+  height: 130%;
+  background:
+    radial-gradient(42% 55% at 50% 8%, rgba(229,51,43,.16), transparent 70%),
+    radial-gradient(70% 60% at 50% 0%, rgba(229,51,43,.07), transparent 60%);
+  pointer-events: none;
+}
+.hero-eyebrow {
+  display: inline-block;
+  font-family: var(--mono); font-size: 12px; letter-spacing: 2.5px;
+  color: var(--red-t); text-transform: uppercase;
+  margin-bottom: 22px;
+}
+h1 {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(46px, 8.5vw, 88px);
+  line-height: 1.04;
+  letter-spacing: 1px;
+}
+h1 .accent { color: var(--red); }
+.hero-sub {
+  max-width: 560px; margin: 26px auto 0;
+  color: var(--t2); font-size: 18px; line-height: 1.65;
+}
+.hero-ctas { display: flex; gap: 14px; justify-content: center; margin-top: 38px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 14px 28px; border-radius: 10px;
+  font-size: 15px; font-weight: 600; text-decoration: none;
+  transition: transform .12s ease-out, background .15s, border-color .15s, box-shadow .2s;
+}
+.btn:active { transform: scale(.97); }
+.btn-red {
+  background: var(--red); color: #fff;
+  box-shadow: 0 8px 32px rgba(229,51,43,.28);
+}
+.btn-red:hover { background: #c01f18; box-shadow: 0 10px 40px rgba(229,51,43,.4); }
+.btn-ghost { border: 1px solid var(--hair); color: var(--t1); }
+.btn-ghost:hover { border-color: rgba(255,255,255,.25); }
+.hero-meta {
+  margin-top: 20px; font-family: var(--mono); font-size: 12.5px; color: var(--t3);
+}
+.hero-meta b { color: var(--t2); font-weight: 500; }
+
+/* hero demo video */
+.demo {
+  position: relative;
+  margin: 64px auto 0;
+  max-width: 920px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.09);
+  box-shadow:
+    0 40px 120px rgba(0,0,0,.7),
+    0 0 0 1px rgba(229,51,43,.06),
+    0 -2px 60px rgba(229,51,43,.06);
+}
+.demo video { display: block; width: 100%; height: auto; }
+
+/* ---------- red rule (the brand divider) ---------- */
+.rule { height: 3px; background: linear-gradient(90deg, transparent, var(--red) 18%, var(--red) 82%, transparent); opacity: .85; margin: 90px 0; border: 0; }
+
+/* ---------- feature rows ---------- */
+.feature {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 56px;
+  align-items: center;
+  margin: 110px 0;
+}
+.feature:nth-of-type(even) .f-copy { order: 2; }
+.f-eyebrow {
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: 2.5px;
+  text-transform: uppercase; color: var(--red-t); margin-bottom: 14px;
+}
+.f-copy h2 {
+  font-size: clamp(26px, 3.4vw, 36px);
+  font-weight: 800; line-height: 1.18; letter-spacing: -.5px;
+  margin-bottom: 16px;
+}
+.f-copy p { color: var(--t2); font-size: 16.5px; }
+.f-copy .kbd {
+  font-family: var(--mono); font-size: .85em;
+  background: var(--panel); border: 1px solid var(--hair);
+  border-bottom-width: 2px; border-radius: 6px; padding: 2px 8px;
+  color: var(--t1); white-space: nowrap;
+}
+.f-shot {
+  border-radius: 14px; overflow: hidden;
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 24px 80px rgba(0,0,0,.6);
+  transform: rotate(var(--tilt, 0deg));
+  transition: transform .35s cubic-bezier(.23,1,.32,1);
+}
+.feature:nth-of-type(odd) .f-shot { --tilt: .6deg; }
+.feature:nth-of-type(even) .f-shot { --tilt: -.6deg; }
+.f-shot:hover { transform: rotate(0deg) translateY(-4px); }
+.f-shot img { display: block; width: 100%; height: auto; }
+
+/* ---------- trust band ---------- */
+.trust {
+  margin: 120px 0;
+  border: 1px solid var(--hair);
+  border-radius: 20px;
+  background:
+    radial-gradient(60% 120% at 80% -20%, rgba(229,51,43,.09), transparent 60%),
+    var(--bg2);
+  padding: 64px 48px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.trust h2 {
+  font-family: var(--display); font-weight: 400;
+  font-size: clamp(30px, 4.6vw, 46px); letter-spacing: 1px;
+}
+.trust h2 .accent { color: var(--red); }
+.trust p { max-width: 620px; margin: 18px auto 0; color: var(--t2); }
+.trust-chips { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 32px; }
+.chip {
+  font-family: var(--mono); font-size: 13px;
+  border: 1px solid var(--hair); border-radius: 999px;
+  padding: 8px 18px; color: var(--t2);
+}
+.chip b { color: var(--grn); font-weight: 500; }
+
+/* ---------- everything grid ---------- */
+.everything { margin: 110px 0; }
+.everything h2 { text-align: center; font-size: clamp(24px,3vw,32px); font-weight: 800; letter-spacing: -.4px; }
+.everything .sub { text-align: center; color: var(--t3); margin-top: 8px; font-size: 15px; }
+.e-grid {
+  margin-top: 44px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px;
+}
+.e-item {
+  border: 1px solid var(--hair); border-radius: 12px;
+  background: var(--bg2);
+  padding: 16px 18px;
+  font-size: 14px; color: var(--t2);
+  display: flex; gap: 10px; align-items: baseline;
+  transition: border-color .15s, transform .15s ease-out;
+}
+.e-item:hover { border-color: rgba(229,51,43,.4); transform: translateY(-2px); }
+.e-item::before { content: "▸"; color: var(--red); font-size: 12px; }
+
+/* ---------- download ---------- */
+#download { margin: 120px 0 40px; }
+#download h2 {
+  text-align: center; font-family: var(--display); font-weight: 400;
+  font-size: clamp(32px, 5vw, 52px); letter-spacing: 1px;
+}
+#download .sub { text-align: center; color: var(--t2); margin-top: 12px; }
+.dl-grid {
+  margin-top: 48px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px;
+}
+.dl-card {
+  border: 1px solid var(--hair); border-radius: 16px;
+  background: var(--bg2);
+  padding: 28px 26px;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: border-color .2s, transform .15s ease-out;
+}
+.dl-card:hover { border-color: rgba(229,51,43,.45); transform: translateY(-3px); }
+.dl-os { font-size: 19px; font-weight: 700; }
+.dl-note { font-size: 13px; color: var(--t3); margin-bottom: 14px; }
+.dl-links { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.dl-links a {
+  display: block; text-align: center;
+  padding: 11px 12px; border-radius: 9px;
+  text-decoration: none; font-size: 14px; font-weight: 600;
+  background: var(--red); color: #fff;
+  transition: background .15s, transform .12s;
+}
+.dl-links a:active { transform: scale(.98); }
+.dl-links a:hover { background: #c01f18; }
+.dl-links a.alt { background: transparent; border: 1px solid var(--hair); color: var(--t2); font-weight: 500; }
+.dl-links a.alt:hover { border-color: rgba(255,255,255,.25); color: var(--t1); background: transparent; }
+.torrent-note {
+  margin-top: 26px; text-align: center;
+  font-family: var(--mono); font-size: 13px; color: var(--t3);
+}
+.torrent-note a { color: var(--red-t); text-decoration: none; }
+.torrent-note a:hover { text-decoration: underline; }
+
+/* ---------- footer ---------- */
+footer {
+  border-top: 1px solid var(--hair);
+  margin-top: 90px;
+  padding: 44px 0 56px;
+  color: var(--t3); font-size: 14px;
+}
+.foot-inner { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.foot-inner .wordmark { font-size: 17px; }
+.foot-links { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
+.foot-links a { color: var(--t3); text-decoration: none; transition: color .15s; }
+.foot-links a:hover { color: var(--t1); }
+
+/* ---------- reveal on scroll ---------- */
+.reveal { opacity: 0; transform: translateY(22px); transition: opacity .7s cubic-bezier(.23,1,.32,1), transform .7s cubic-bezier(.23,1,.32,1); }
+.reveal.in { opacity: 1; transform: none; }
+
+/* hero load stagger */
+.stagger > * { opacity: 0; transform: translateY(16px); animation: rise .8s cubic-bezier(.23,1,.32,1) forwards; }
+.stagger > *:nth-child(1) { animation-delay: .05s; }
+.stagger > *:nth-child(2) { animation-delay: .15s; }
+.stagger > *:nth-child(3) { animation-delay: .25s; }
+.stagger > *:nth-child(4) { animation-delay: .35s; }
+.stagger > *:nth-child(5) { animation-delay: .45s; }
+.stagger > *:nth-child(6) { animation-delay: .6s; }
+@keyframes rise { to { opacity: 1; transform: none; } }
+
+@media (max-width: 760px) {
+  .feature { grid-template-columns: 1fr; gap: 28px; margin: 70px 0; }
+  .feature:nth-of-type(even) .f-copy { order: 0; }
+  .trust { padding: 44px 24px; }
+  .nav-links a:not(.nav-star) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal, .stagger > * { opacity: 1 !important; transform: none !important; animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-inner">
+    <a class="brand" href="#">
+      <img src="assets/logo.svg" alt="">
+      <span class="wordmark"><b>BAT</b><span>orrent</span></span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a class="nav-star" href="https://github.com/Mateuscruz19/BATorrent" target="_blank" rel="noopener">
+        ★ <span id="stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap stagger">
+    <div class="hero-eyebrow">Free · Open source · No ads · No telemetry</div>
+    <h1>The BitTorrent client<br>with a <span class="accent">face</span>.</h1>
+    <p class="hero-sub">
+      Cover art appears the moment you add a torrent. A built-in player streams while you
+      download — subtitles included. And <b>Ctrl+K</b> does everything else.
+    </p>
+    <div class="hero-ctas">
+      <a class="btn btn-red" href="#download">Download — it's free</a>
+      <a class="btn btn-ghost" href="https://github.com/Mateuscruz19/BATorrent" target="_blank" rel="noopener">View source ↗</a>
+    </div>
+    <div class="hero-meta">Windows · macOS · Linux &nbsp;—&nbsp; native <b>C++/Qt6</b>, not Electron &nbsp;—&nbsp; <b>MIT</b> licensed</div>
+    <div class="demo">
+      <video src="assets/demo.mp4" autoplay loop muted playsinline poster="assets/shot-grid.jpg"></video>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <hr class="rule">
+
+  <section id="features">
+    <div class="feature reveal">
+      <div class="f-copy">
+        <div class="f-eyebrow">Library, not list</div>
+        <h2>Your downloads, with posters.</h2>
+        <p>BATorrent reads release names — movies, shows, games, even messy anime fansub naming — and pulls the real cover art automatically. A torrent list that looks like a streaming library, because that's what it is.</p>
+      </div>
+      <div class="f-shot"><img src="assets/shot-grid.jpg" alt="Cover-art grid view" loading="lazy"></div>
+    </div>
+
+    <div class="feature reveal">
+      <div class="f-copy">
+        <div class="f-eyebrow">Watch while it downloads</div>
+        <h2>Press play before it finishes.</h2>
+        <p>The built-in player streams from the torrent as pieces arrive, remembers where you stopped, and now finds subtitles for you — load any .srt, or search online sources right from the player. Sync them with one keystroke.</p>
+      </div>
+      <div class="f-shot"><img src="assets/shot-list.jpg" alt="List view with semantic state colors" loading="lazy"></div>
+    </div>
+
+    <div class="feature reveal">
+      <div class="f-copy">
+        <div class="f-eyebrow">Keyboard first</div>
+        <h2>One shortcut. <span class="kbd">Ctrl K</span></h2>
+        <p>Jump to any torrent by name. Pause everything. Toggle the speed limit. Open any page or window. The command palette makes the whole app one fuzzy search away — no mouse required.</p>
+      </div>
+      <div class="f-shot"><img src="assets/shot-palette.jpg" alt="Command palette" loading="lazy"></div>
+    </div>
+
+    <div class="feature reveal">
+      <div class="f-copy">
+        <div class="f-eyebrow">Yours to theme</div>
+        <h2>Six themes. Or build your own.</h2>
+        <p>Dark, Light, Midnight, Sakura, Dark Star — or a fully custom theme with your own colors and background image. Optional anime accent art, and an app icon you pick independently of it all.</p>
+      </div>
+      <div class="f-shot"><img src="assets/shot-theme.jpg" alt="Sakura theme" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="trust reveal">
+    <h2>Nothing to <span class="accent">sell</span> you.</h2>
+    <p>No telemetry, no analytics, no phoning home. The only outbound request is the GitHub release check — and it's optional. Built by one developer, in the open, under MIT.</p>
+    <div class="trust-chips">
+      <span class="chip"><b>✓</b> No ads</span>
+      <span class="chip"><b>✓</b> No telemetry</span>
+      <span class="chip"><b>✓</b> No accounts</span>
+      <span class="chip"><b>✓</b> No bundleware</span>
+      <span class="chip"><b>✓</b> MIT license</span>
+    </div>
+  </section>
+
+  <section class="everything reveal">
+    <h2>And everything a torrent client must have.</h2>
+    <p class="sub">Full power-user parity — none of it traded away for the looks.</p>
+    <div class="e-grid">
+      <div class="e-item">Sequential download &amp; streaming</div>
+      <div class="e-item">Stalled torrents explain why</div>
+      <div class="e-item">RSS auto-download with filters</div>
+      <div class="e-item">Web UI with QR phone pairing</div>
+      <div class="e-item">VPN kill switch &amp; proxy</div>
+      <div class="e-item">Per-torrent limits &amp; queueing</div>
+      <div class="e-item">Categories, tags &amp; watch folder</div>
+      <div class="e-item">Game library with launcher</div>
+      <div class="e-item">Telegram &amp; Discord presence</div>
+      <div class="e-item">Trash-safe file removal</div>
+      <div class="e-item">8 languages</div>
+      <div class="e-item">IP filtering &amp; encryption</div>
+    </div>
+  </section>
+
+  <section id="download">
+    <h2>Get <span style="color:var(--red)">BAT</span>orrent</h2>
+    <p class="sub">Latest release, straight from GitHub. Also published as web-seeded torrents — of course.</p>
+    <div class="dl-grid">
+      <div class="dl-card reveal">
+        <div class="dl-os">Windows</div>
+        <div class="dl-note">Windows 10/11, 64-bit</div>
+        <div class="dl-links">
+          <a href="https://github.com/Mateuscruz19/BATorrent/releases/latest/download/BATorrent-setup-x86_64.exe">Installer (.exe)</a>
+          <a class="alt" href="https://github.com/Mateuscruz19/BATorrent/releases/latest/download/BATorrent-windows-x86_64-portable.zip">Portable (.zip)</a>
+          <a class="alt" href="https://apps.microsoft.com/search?query=BATorrent" target="_blank" rel="noopener">Microsoft Store</a>
+        </div>
+      </div>
+      <div class="dl-card reveal">
+        <div class="dl-os">macOS</div>
+        <div class="dl-note">Apple Silicon — first launch: right-click → Open</div>
+        <div class="dl-links">
+          <a href="https://github.com/Mateuscruz19/BATorrent/releases/latest/download/BATorrent-macos-arm64.dmg">Download (.dmg)</a>
+        </div>
+      </div>
+      <div class="dl-card reveal">
+        <div class="dl-os">Linux</div>
+        <div class="dl-note">Any modern distro</div>
+        <div class="dl-links">
+          <a href="https://github.com/Mateuscruz19/BATorrent/releases/latest/download/BATorrent-linux-x86_64.AppImage">AppImage</a>
+        </div>
+      </div>
+    </div>
+    <p class="torrent-note">
+      Unreliable connection to GitHub? Every asset is also published as a
+      <a href="https://github.com/Mateuscruz19/BATorrent/releases/latest" target="_blank" rel="noopener">web-seeded .torrent</a>
+      — a torrent client you can download via torrent.
+    </p>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap foot-inner">
+    <span class="wordmark"><b>BAT</b><span>orrent</span></span>
+    <span>Made by <a href="https://github.com/Mateuscruz19" style="color:var(--t2);text-decoration:none">Mateus Cruz</a> in Brazil 🇧🇷</span>
+    <div class="foot-links">
+      <a href="https://github.com/Mateuscruz19/BATorrent">GitHub</a>
+      <a href="https://github.com/Mateuscruz19/BATorrent/releases">Releases</a>
+      <a href="https://github.com/Mateuscruz19/BATorrent/blob/main/PRIVACY.md">Privacy</a>
+      <a href="https://github.com/Mateuscruz19/BATorrent/blob/main/README.pt-BR.md">Português</a>
+      <a href="https://github.com/Mateuscruz19/BATorrent/blob/main/README.ru.md">Русский</a>
+      <a href="https://github.com/sponsors/Mateuscruz19">Donate ♥</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// live star count (graceful if rate-limited)
+fetch("https://api.github.com/repos/Mateuscruz19/BATorrent")
+  .then(r => r.json())
+  .then(d => { if (d.stargazers_count) document.getElementById("stars").textContent = d.stargazers_count; })
+  .catch(() => {});
+
+// scroll reveals
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+}), { threshold: 0.12 });
+document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+</script>
+</body>
+</html>
