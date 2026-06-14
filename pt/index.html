@@ -633,5 +633,19 @@ const io = new IntersectionObserver(es => es.forEach(e => {
 }), { threshold: 0.12 });
 document.querySelectorAll(".reveal").forEach(el => io.observe(el));
 </script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll(".nav-links a[href]").forEach(function (a) {
+    var h = a.getAttribute("href");
+    if (h === "../" || h === "pt/" || h === "ru/" || h === "../pt/" || h === "../ru/" || h === "../" )
+      a.addEventListener("click", function () {
+        try {
+          localStorage.setItem("bat_lang",
+            h.indexOf("pt") >= 0 ? "pt" : h.indexOf("ru") >= 0 ? "ru" : "en");
+        } catch (e) {}
+      });
+  });
+});
+</script>
 </body>
 </html>

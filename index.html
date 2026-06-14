@@ -3,6 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+(function () {
+  // auto-detect language on first visit only; manual choice (lang switcher) wins
+  try {
+    if (location.pathname.replace(/\/index\.html$/, "/") !== "/") return;
+    if (localStorage.getItem("bat_lang")) return;
+    var l = (navigator.language || navigator.userLanguage || "").toLowerCase();
+    if (l.indexOf("pt") === 0) location.replace("/pt/");
+    else if (l.indexOf("ru") === 0) location.replace("/ru/");
+  } catch (e) {}
+})();
+</script>
 <title>BATorrent — the BitTorrent client with a face</title>
 <meta name="description" content="Free, open-source BitTorrent client with automatic cover art, a built-in player with subtitles, and a command palette. Native C++/Qt6 for Windows, macOS and Linux. No ads, no telemetry, MIT.">
 <meta property="og:title" content="BATorrent — the BitTorrent client with a face">
@@ -632,6 +644,20 @@ const io = new IntersectionObserver(es => es.forEach(e => {
   if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
 }), { threshold: 0.12 });
 document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+</script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll(".nav-links a[href]").forEach(function (a) {
+    var h = a.getAttribute("href");
+    if (h === "../" || h === "pt/" || h === "ru/" || h === "../pt/" || h === "../ru/" || h === "../" )
+      a.addEventListener("click", function () {
+        try {
+          localStorage.setItem("bat_lang",
+            h.indexOf("pt") >= 0 ? "pt" : h.indexOf("ru") >= 0 ? "ru" : "en");
+        } catch (e) {}
+      });
+  });
+});
 </script>
 </body>
 </html>
