@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BATorrent 4.2 “Polish” — release notes</title>
+<meta name="description" content="BATorrent 4.2 adds a Ctrl+K command palette, automatic subtitles in the built-in player, stalled-torrent explanations and trash-safe deletes. Free, open-source, no telemetry.">
+<link rel="canonical" href="https://batorrent.com/blog/batorrent-4-2-polish/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="BATorrent 4.2 “Polish”">
+<meta property="og:description" content="A command palette, subtitles in the player, and torrents that explain why they're stuck.">
+<meta property="og:image" content="https://batorrent.com/assets/shot-palette.jpg">
+<meta property="og:url" content="https://batorrent.com/blog/batorrent-4-2-polish/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="../../assets/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=New+Rocker&family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "BATorrent 4.2 “Polish”",
+  "datePublished": "2026-06-12",
+  "author": { "@type": "Person", "name": "Mateus Cruz" },
+  "image": "https://batorrent.com/assets/shot-palette.jpg",
+  "mainEntityOfPage": "https://batorrent.com/blog/batorrent-4-2-polish/"
+}
+</script>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a class="brand" href="../../"><img src="../../assets/logo.svg" alt=""><span class="wordmark"><b>BAT</b><span>orrent</span></span></a>
+    <div class="nav-links">
+      <a class="home" href="../">Blog</a>
+      <a href="../../#download">Download</a>
+      <a href="https://github.com/BATorrent-app/BATorrent">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<article class="wrap">
+  <span class="date">June 12, 2026 · v4.2.0</span>
+  <h1>BATorrent 4.2 — <span class="accent">“Polish”</span></h1>
+  <p class="lede">The release where BATorrent starts to <em>feel</em> like the app it already was. No new pages, no new tabs — hundreds of small decisions instead. Every dialog answers Esc. Every control shows focus. Every state explains itself. And one big power feature.</p>
+
+  <h2>Ctrl/⌘+K — a command palette</h2>
+  <p>Press <span class="kbd">Ctrl K</span> (or <span class="kbd">⌘ K</span>) anywhere. Jump to any torrent by name, pause or resume everything, toggle the speed limit, open any page or window — one box, fuzzy search, no mouse. It's the single shortcut that turns the whole app into something you drive from the keyboard.</p>
+  <img src="../../assets/shot-palette.jpg" alt="BATorrent command palette filtering torrents and actions">
+
+  <h2>A window that finally looks like the app</h2>
+  <p>On macOS the native title bar is gone — the window controls sit inside the app itself, so there's no grey strip fighting your theme. Every control got a keyboard focus ring and press feedback. And the state colours finally make sense: completed reads green, seeding reads amber, so a 100%-complete bar stops looking like an error.</p>
+  <img src="../../assets/shot-grid.jpg" alt="BATorrent cover-art grid with unified window chrome">
+
+  <h2>Stalled torrents that explain themselves</h2>
+  <p>The most common complaint about every torrent client is a silent “stalled”. BATorrent now inspects the swarm and tells you <strong>why</strong> on hover: no peers found yet (still searching DHT and trackers), peers connected but no seeds, peers choking you, or the actual disk/tracker error. No more guessing whether it's your connection or the torrent.</p>
+
+  <h2>Subtitles, finally</h2>
+  <p>The built-in player streams while you download — and now it does subtitles. Drop an <strong>.srt</strong> or <strong>.vtt</strong> next to the video and it loads automatically; or search online sources right from the player and nudge the timing with a keystroke if they're out of sync. The identity was always “a torrent client that's also a place to watch” — this closes the gap.</p>
+
+  <h2>Safer by default</h2>
+  <ul>
+    <li><strong>“Remove with files” now sends data to the system trash</strong> — recoverable, not gone forever.</li>
+    <li><strong>Free disk space</strong> sits in the status bar, next to your totals.</li>
+    <li>If the app ever crashes, the next launch offers a <strong>one-click pre-filled GitHub issue</strong> — you review everything in the browser first. Nothing is ever sent automatically. The no-telemetry promise is unchanged.</li>
+  </ul>
+
+  <h2>All eight languages, one pass</h2>
+  <p>Search sources, categories, result counts, the port diagnostics, the nav rail — no more stray Portuguese leaking into a non-Portuguese UI. Plus: deduplicated search results, decoded HTML entities in titles, real empty states for RSS and search, a richer Statistics window with a live speed graph, and <span class="kbd">Esc</span>/<span class="kbd">Enter</span> working in every dialog.</p>
+
+  <h2>And one thing you can't see</h2>
+  <p>Every release is now also published as a <strong>web-seeded .torrent</strong>. With zero peers the GitHub download URL itself serves the file; when GitHub is unreachable — which happens for a meaningful share of users — any peer keeps the download alive. A torrent client you can download via torrent felt like the right thing to build.</p>
+
+  <hr>
+
+  <p>BATorrent is free, open-source (MIT) and has nothing to sell you — no ads, no telemetry, no accounts. Built solo, in the open.</p>
+  <p><a class="cta" href="../../#download">Download BATorrent 4.2 →</a></p>
+
+  <a class="backlink" href="../">← all posts</a>
+</article>
+
+<footer>
+  <div class="foot-inner">
+    <span>BATorrent — built in Brazil 🇧🇷</span>
+    <a class="sep" href="../../">batorrent.com</a>
+    <a href="https://github.com/BATorrent-app/BATorrent">GitHub</a>
+  </div>
+</footer>
+
+</body>
+</html>

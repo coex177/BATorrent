@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>BATorrent Blog</title>
+    <link>https://batorrent.com/blog/</link>
+    <description>Release notes and build logs from BATorrent, the open-source BitTorrent client with a media-hub UI.</description>
+    <language>en</language>
+    <atom:link href="https://batorrent.com/blog/feed.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title>BATorrent 4.2 “Polish”</title>
+      <link>https://batorrent.com/blog/batorrent-4-2-polish/</link>
+      <guid>https://batorrent.com/blog/batorrent-4-2-polish/</guid>
+      <pubDate>Fri, 12 Jun 2026 12:00:00 GMT</pubDate>
+      <description>A Ctrl+K command palette, subtitles in the built-in player, torrents that explain why they're stuck, trash-safe deletes, and a hundred quieter details.</description>
+    </item>
+  </channel>
+</rss>
