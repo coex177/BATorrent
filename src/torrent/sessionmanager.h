@@ -316,6 +316,11 @@ public:
     void setWatchedFolder(const QString &path);
     QString watchedFolder() const;
 
+    // When enabled, the source .torrent file is removed from disk (Recycle Bin,
+    // or permanently if that fails) after a successful add.
+    void setDeleteTorrentOnAdd(bool enabled);
+    bool deleteTorrentOnAdd() const;
+
     // Auto-move completed downloads
     void setAutoMove(bool enabled, const QString &path);
     bool autoMoveEnabled() const;
@@ -581,6 +586,9 @@ private:
     QString m_watchedFolder;
     QTimer *m_watchedFolderTimer = nullptr;
     void scanWatchedFolder();
+    // Auto-delete the source .torrent after adding (see setDeleteTorrentOnAdd).
+    bool m_deleteTorrentOnAdd = false;
+    void deleteSourceTorrentIfEnabled(const QString &filePath);
     // Auto-extract
     bool m_autoExtract = false;
     bool m_autoExtractDelete = false;

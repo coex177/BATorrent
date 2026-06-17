@@ -138,6 +138,7 @@ SessionManager::SessionManager(QObject *parent)
     m_runOnComplete = settings.value("runOnComplete").toString();
     QString watchPath = settings.value("watchedFolder").toString();
     if (!watchPath.isEmpty()) setWatchedFolder(watchPath);
+    m_deleteTorrentOnAdd = settings.value("deleteTorrentOnAdd", false).toBool();
 
     if (m_anonymousMode || m_forceIpv4 || m_ptMode) {
         // Apply immediately so the first session starts with the right pack;
@@ -330,6 +331,7 @@ void SessionManager::addTorrent(const QString &filePath, const QString &savePath
         stageResumeSave(h);   // persist now — an idle 0%/no-peer torrent never
 
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
+        deleteSourceTorrentIfEnabled(filePath);
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -376,6 +378,7 @@ void SessionManager::addTorrentWithPriorities(const QString &filePath,
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist immediately (see addTorrent)
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
+        deleteSourceTorrentIfEnabled(filePath);
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -3192,6 +3195,22 @@ void SessionManager::setWatchedFolder(const QString &path)
 
 QString SessionManager::watchedFolder() const { return m_watchedFolder; }
 
+void SessionManager::setDeleteTorrentOnAdd(bool enabled)
+{
+    m_deleteTorrentOnAdd = enabled;
+    QSettings("BATorrent", "BATorrent").setValue("deleteTorrentOnAdd", enabled);
+}
+
+bool SessionManager::deleteTorrentOnAdd() const { return m_deleteTorrentOnAdd; }
+
+void SessionManager::deleteSourceTorrentIfEnabled(const QString &filePath)
+{
+    if (!m_deleteTorrentOnAdd || filePath.isEmpty()) return;
+    // Recycle Bin first (recoverable, matching how torrent data is removed);
+    // fall back to a permanent delete if the volume has no trash.
+    if (!QFile::moveToTrash(filePath)) QFile::remove(filePath);
+}
+
 void SessionManager::scanWatchedFolder()
 {
     if (m_watchedFolder.isEmpty()) return;
@@ -3206,7 +3225,9 @@ void SessionManager::scanWatchedFolder()
         QString savePath = s.value("lastSavePath",
             QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
         addTorrent(path, savePath);
-        // Move the .torrent to a "processed" subfolder to avoid re-adding
+        // Move the .torrent to a "processed" subfolder to avoid re-adding —
+        // unless delete-on-add already removed it (nothing left to re-scan).
+        if (!QFileInfo::exists(path)) continue;
         QDir processed(dir.filePath(".processed"));
         if (!processed.exists()) processed.mkpath(".");
         QFile::rename(path, processed.filePath(f));

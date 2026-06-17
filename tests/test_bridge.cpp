@@ -581,6 +581,50 @@ TEST_CASE("Session bridge: deleting a locked (downloading) folder retries until 
 #endif
 
 // ============================================================================
+//  SessionManager — deleteTorrentOnAdd: remove the source .torrent after add.
+// ============================================================================
+TEST_CASE("Session: deleteTorrentOnAdd removes the source .torrent after adding", "[bridge][session][add]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeFixtureTorrent(tmp.path());
+    QDir().mkpath(tmp.path() + "/dl");
+
+    SessionManager session;
+    session.setDeleteTorrentOnAdd(true);
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    REQUIRE(QFileInfo::exists(torrentPath));
+    session.addTorrent(torrentPath, tmp.path() + "/dl");
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    REQUIRE(pumpUntil([&] { return !QFileInfo::exists(torrentPath); }));
+    wipeBatState();
+}
+
+TEST_CASE("Session: the source .torrent is kept when deleteTorrentOnAdd is off", "[bridge][session][add]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeFixtureTorrent(tmp.path());
+    QDir().mkpath(tmp.path() + "/dl");
+
+    SessionManager session;
+    session.setDeleteTorrentOnAdd(false);
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    session.addTorrent(torrentPath, tmp.path() + "/dl");
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    CHECK(QFileInfo::exists(torrentPath));   // left on disk
+    wipeBatState();
+}
+
+// ============================================================================
 //  SessionManager — speed/queue/network prefs persist across a "restart"
 //  Regression: the QWidget→QML migration left these setters writing only to the
 //  live libtorrent session (never QSettings) and the ctor never reloaded them,
