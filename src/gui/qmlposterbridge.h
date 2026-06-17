@@ -791,6 +791,8 @@ public:
     Q_INVOKABLE void set(const QString &key, const QVariant &v);
     // Register BATorrent as the default .torrent / magnet handler. Returns success.
     Q_INVOKABLE bool setAsDefaultApp();
+    // Relaunch the app (used after changing the app icon, which needs a restart).
+    Q_INVOKABLE void restartApp();
     // Post a test message to the configured Telegram chat; result via telegramTestResult.
     Q_INVOKABLE void testTelegram();
     // Windows-only: add the save folder to Windows Defender's exclusion list (UAC prompt).

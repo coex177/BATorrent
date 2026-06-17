@@ -25,19 +25,20 @@ Window {
     // Warn (once per open) when the watched folder is on but nothing clears the
     // added .torrent files — a removed torrent would just get re-added.
     property bool reorgWarned: false
-    onVisibleChanged: if (visible) reorgWarned = false
+    property bool reorgHighlight: false   // flashes the Watched Folder card after the warning
+    onVisibleChanged: if (visible) { reorgWarned = false; reorgHighlight = false }
     function reorgRiskActive() {
         if (typeof settings === "undefined") return false
         return (settings.get("watchedFolder") || "") !== ""
             && !settings.get("deleteTorrentOnAdd")
             && (settings.get("torrentMoveDir") || "") === ""
     }
-    // Shows the warning if warranted; returns true when shown (so a Close caller
-    // can defer closing until the dialog is acknowledged).
-    function maybeWarnReorg(closeAfter) {
+    // Shows the warning the first time the user tries to leave/close in the risky
+    // state; returns true when shown so the caller cancels the leave/close. After
+    // the user acknowledges it, reorgDlg sends them to the Watched Folder section.
+    function maybeWarnReorg() {
         if (!reorgRiskActive() || reorgWarned) return false
         reorgWarned = true
-        reorgDlg.closeAfter = closeAfter
         reorgDlg.open()
         return true
     }
@@ -107,7 +108,6 @@ Window {
             { type: "group", label: (i18n.language, i18n.t("set_grp_system")) },
             { type: "toggle", key: "startTray", label: (i18n.language, i18n.t("settings_start_tray")) },
             { type: "toggle", key: "closeToTray", label: (i18n.language, i18n.t("settings_close_to_tray")), on: true },
-            { type: "toggle", key: "notifSound", label: (i18n.language, i18n.t("settings_notif_sound")), on: true },
             { type: "toggle", key: "showSplash", label: (i18n.language, i18n.t("settings_show_splash")), on: true },
             { type: "button", action: "default", label: (i18n.language, i18n.t("set_default_app")), btn: (i18n.language, i18n.t("settings_set_default")) }
         ],
@@ -377,7 +377,7 @@ Window {
                                 }
                             }
                             MouseArea { id: nrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: { if (win.sec === 1 && index !== 1) win.maybeWarnReorg(false); win.sec = index } }
+                                onClicked: { if (win.sec === 1 && index !== 1 && win.maybeWarnReorg()) return; win.sec = index } }
                         }
                     }
                 }
@@ -392,6 +392,9 @@ Window {
                 contentWidth: width
                 contentHeight: contentCol.implicitHeight + 2 * Theme.sp5
                 boundsBehavior: Flickable.StopAtBounds
+
+                // one-shot smooth scroll used to reveal the highlighted card
+                NumberAnimation { id: scrollAnim; target: contentScroll; property: "contentY"; duration: 280; easing.type: Easing.OutCubic }
 
                 ColumnLayout {
                     id: contentCol
@@ -448,11 +451,24 @@ Window {
 
                             // .card
                             Rectangle {
+                                // flash this card when the re-add warning points the user here
+                                readonly property bool reorgHl: win.reorgHighlight && modelData.rows !== undefined
+                                    && modelData.rows.filter(function(r){ return r && (r.key === "deleteTorrentOnAdd" || r.key === "torrentMoveDir") }).length > 0
+                                // when it lights up, scroll it into view (deferred so layout has settled)
+                                onReorgHlChanged: if (reorgHl) Qt.callLater(scrollIntoView)
+                                function scrollIntoView() {
+                                    var y = mapToItem(contentCol, 0, 0).y + contentCol.y - Theme.sp4
+                                    var maxY = Math.max(0, contentScroll.contentHeight - contentScroll.height)
+                                    scrollAnim.to = Math.max(0, Math.min(y, maxY))
+                                    scrollAnim.restart()
+                                }
                                 Layout.fillWidth: true
                                 radius: 11
-                                color: Theme.panel
-                                border.color: Theme.hair
-                                border.width: 1
+                                color: reorgHl ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.07) : Theme.panel
+                                border.color: reorgHl ? Theme.accent : Theme.hair
+                                border.width: reorgHl ? 2 : 1
+                                Behavior on color { ColorAnimation { duration: 350 } }
+                                Behavior on border.color { ColorAnimation { duration: 350 } }
                                 implicitHeight: rowsCol.implicitHeight
 
                                 ColumnLayout {
@@ -496,7 +512,7 @@ Window {
                 anchors.rightMargin: 20
                 Text { text: (i18n.language, i18n.t("set_changes_instant")); color: Theme.t4; font.pixelSize: 11; font.family: Theme.fontSans }
                 Item { Layout.fillWidth: true }
-                BtnFlat { primary: true; text: (i18n.language, i18n.t("btn_close")); onClicked: if (!win.maybeWarnReorg(true)) win.close() }
+                BtnFlat { primary: true; text: (i18n.language, i18n.t("btn_close")); onClicked: if (!win.maybeWarnReorg()) win.close() }
             }
         }
     }
@@ -689,6 +705,12 @@ Window {
                         ToolTip.visible: tileMa.containsMouse
                         ToolTip.delay: 400
                     }
+                }
+                BtnFlat {
+                    anchors.verticalCenter: parent.verticalCenter
+                    sm: true
+                    text: (i18n.language, i18n.t("set_app_icon_restart"))
+                    onClicked: if (typeof settings !== "undefined") settings.restartApp()
                 }
             }
         }
@@ -1093,51 +1115,52 @@ Window {
 
     PairingDialog { id: pairDlg }
 
-    Dialog {
+    BatDialog {
         id: infoDlg
         property string message: ""
-        anchors.centerIn: parent
-        modal: true
-        standardButtons: Dialog.Ok
-        contentItem: Text {
+        cardW: 440; cardH: 200
+        showCancel: false
+        okText: (i18n.language, i18n.t("btn_ok"))
+        Text {
+            Layout.fillWidth: true
             text: infoDlg.message
             color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans
             wrapMode: Text.WordWrap
         }
     }
 
-    Dialog {
+    BatDialog {
         id: reorgDlg
-        property bool closeAfter: false
-        anchors.centerIn: parent
-        modal: true
-        standardButtons: Dialog.Ok
-        onAccepted: if (reorgDlg.closeAfter) win.close()
-        contentItem: Item {
-            implicitWidth: 440
-            implicitHeight: reorgTxt.implicitHeight
-            Text {
-                id: reorgTxt
-                width: parent.width
-                text: (i18n.language, i18n.t("set_reorg_warn_body"))
-                color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans
-                wrapMode: Text.WordWrap
-            }
+        cardW: 480; cardH: 280
+        title: (i18n.language, i18n.t("set_reorg_warn_title"))
+        showCancel: false
+        okText: (i18n.language, i18n.t("btn_ok"))
+        // Send the user to the Watched Folder section and flash it so the two
+        // options that fix this are obvious.
+        onAccepted: { win.sec = 1; win.reorgHighlight = true; reorgHlTimer.restart() }
+        Text {
+            Layout.fillWidth: true
+            text: (i18n.language, i18n.t("set_reorg_warn_body"))
+            color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans
+            wrapMode: Text.WordWrap
+            lineHeight: 1.4
         }
     }
+    Timer { id: reorgHlTimer; interval: 5000; onTriggered: win.reorgHighlight = false }
 
     // rename the active profile
-    Dialog {
+    BatDialog {
         id: renameDlg
         property int idx: 0
-        anchors.centerIn: parent
-        modal: true
+        cardW: 360; cardH: 190
         title: (i18n.language, i18n.t("set_custom_rename"))
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        okText: (i18n.language, i18n.t("btn_ok"))
+        cancelText: (i18n.language, i18n.t("btn_cancel"))
         onAccepted: if (themeBridge && renameField.text.length > 0) themeBridge.renameProfile(idx, renameField.text)
-        contentItem: TFld {
+        TFld {
             id: renameField
-            implicitWidth: 240; implicitHeight: 32
+            Layout.fillWidth: true
+            implicitHeight: 32
         }
     }
 }

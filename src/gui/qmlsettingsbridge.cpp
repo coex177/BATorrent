@@ -32,6 +32,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QProcess>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -423,6 +424,14 @@ void QmlSettingsBridge::testTelegram()
         reply->deleteLater();
         nam->deleteLater();
     });
+}
+
+void QmlSettingsBridge::restartApp()
+{
+    // Launch a fresh instance, then quit this one (same idiom as the recovery
+    // "reset & restart" path in main.cpp).
+    QProcess::startDetached(QCoreApplication::applicationFilePath(), {});
+    QCoreApplication::quit();
 }
 
 bool QmlSettingsBridge::excludeFromDefender()
