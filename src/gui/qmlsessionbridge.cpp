@@ -208,27 +208,22 @@ void QmlSessionBridge::resumeSelected()
     for (int r : m_selectedRows) m_session->resumeTorrent(r);
 }
 
-void QmlSessionBridge::removeSelected()
+void QmlSessionBridge::removeSelectedRows(bool deleteFiles)
 {
     QList<int> rows = m_selectedRows.isEmpty()
         ? (m_selectedIndex >= 0 ? QList<int>{m_selectedIndex} : QList<int>{})
         : m_selectedRows;
     if (rows.isEmpty()) return;
+    // Descending so each erase doesn't shift the indices we haven't removed yet.
     std::sort(rows.begin(), rows.end(), std::greater<int>());
-    for (int r : rows) m_session->removeTorrent(r, false);
+    for (int r : rows) m_session->removeTorrent(r, deleteFiles);
     m_selectedRows.clear();
     m_selectedIndex = -1;
     emit selectionChanged(); emit selectionListsChanged();
 }
 
-void QmlSessionBridge::removeSelectedWithFiles()
-{
-    if (m_selectedIndex >= 0) {
-        m_session->removeTorrent(m_selectedIndex, true);
-        m_selectedIndex = -1;
-        emit selectionChanged(); emit selectionListsChanged();
-    }
-}
+void QmlSessionBridge::removeSelected()          { removeSelectedRows(false); }
+void QmlSessionBridge::removeSelectedWithFiles() { removeSelectedRows(true); }
 
 void QmlSessionBridge::pauseAll() { m_session->pauseAll(); }
 void QmlSessionBridge::resumeAll() { m_session->resumeAll(); }

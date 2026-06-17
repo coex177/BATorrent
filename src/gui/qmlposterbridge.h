@@ -178,6 +178,9 @@ public:
     Q_INVOKABLE void resumeSelected();
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void removeSelectedWithFiles();
+private:
+    void removeSelectedRows(bool deleteFiles);   // shared by both remove paths
+public:
     Q_INVOKABLE void pauseAll();
     Q_INVOKABLE void resumeAll();
     Q_INVOKABLE void addTorrentFile(const QString &filePath);

@@ -572,7 +572,8 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
             if (auto ti = h.torrent_file()) {
                 const auto &fs = ti->files();
                 for (const auto i : fs.file_range()) {
-                    const QString p = QString::fromStdString(std::string(fs.file_path(i)));
+                    QString p = QString::fromStdString(std::string(fs.file_path(i)));
+                    p.replace(QLatin1Char('\\'), QLatin1Char('/'));   // libtorrent uses the native separator on Windows
                     const int slash = p.indexOf(QLatin1Char('/'));
                     tops.insert(slash > 0 ? p.left(slash) : p);
                 }
@@ -593,13 +594,28 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
 
         m_session.remove_torrent(h, {});
         if (!trashTargets.isEmpty()) {
-            QTimer::singleShot(900, this, [trashTargets]() {
-                for (const QString &p : trashTargets) {
-                    if (!QFileInfo::exists(p)) continue;
-                    if (!QFile::moveToTrash(p))
-                        qWarning() << "[session] moveToTrash failed, leaving on disk:" << p;
+            // An actively-downloading torrent keeps its files open; libtorrent
+            // only releases the handles a moment after remove_torrent. Until
+            // then moveToTrash fails with a sharing violation, so retry with
+            // backoff instead of trying once and silently leaving data on disk.
+            auto remaining = std::make_shared<QStringList>(trashTargets);
+            auto attempt   = std::make_shared<int>(0);
+            auto trash     = std::make_shared<std::function<void()>>();
+            *trash = [this, remaining, attempt, trash]() {
+                QStringList stillLocked;
+                for (const QString &p : *remaining) {
+                    if (!QFileInfo::exists(p)) continue;            // gone (trashed, or never there)
+                    if (!QFile::moveToTrash(p)) stillLocked << p;   // handle not released yet
                 }
-            });
+                *remaining = stillLocked;
+                if (remaining->isEmpty()) return;
+                if (++(*attempt) >= 10) {
+                    qWarning() << "[session] moveToTrash gave up, left on disk:" << *remaining;
+                    return;
+                }
+                QTimer::singleShot(600, this, *trash);
+            };
+            QTimer::singleShot(700, this, *trash);
         }
     } catch (const std::exception &e) {
         qWarning() << "[session] removeTorrent exception:" << e.what();
