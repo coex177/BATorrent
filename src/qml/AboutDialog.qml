@@ -13,11 +13,12 @@ BatDialog {
     title: (i18n.language, i18n.t("about_title"))
     cardW: 460
     cardH: 540
-    okText: (i18n.language, i18n.t("action_donate"))
-    showCancel: false
+    // Close is the default (primary) action; Donate stays as the secondary button.
+    okText: (i18n.language, i18n.t("btn_close"))
+    cancelText: (i18n.language, i18n.t("action_donate"))
     footHint: "© 2026 · open-source"
 
-    onAccepted: Qt.openUrlExternally("https://github.com/sponsors/Mateuscruz19")
+    onRejected: Qt.openUrlExternally("https://github.com/sponsors/Mateuscruz19")
 
     // .ahero
     ColumnLayout {
