@@ -92,6 +92,11 @@ public:
     // Rename one file in the torrent (libtorrent's rename_file). The path
     // is interpreted relative to the torrent's save_path.
     void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath);
+    // Rename the whole torrent: the on-disk file (single-file) or top-level
+    // folder (multi-file), plus the name shown in the list. The display name
+    // is stored as a per-torrent override because libtorrent's metadata name
+    // is immutable.
+    void renameTorrent(int torrentIndex, const QString &newName);
     // Move the torrent's whole save folder to a new location. Triggers a
     // force_recheck after the move so libtorrent re-verifies pieces.
     void moveStorage(int torrentIndex, const QString &newSavePath);
@@ -554,6 +559,9 @@ private:
     // row has a stable, unique key before metadata arrives — without it,
     // torrentHash() returns empty pre-metadata and the cover/name never resolve.
     std::map<lt::torrent_handle, QString> m_magnetHashes;
+    // Handle -> absolute path of the old top-level folder awaiting cleanup after
+    // a rename (libtorrent re-roots the files but leaves the empty folder).
+    std::map<lt::torrent_handle, QString> m_renameOldRoots;
     // Hash -> clean-title + type cover hint (game catalog / Stremio), consumed once.
     QMap<QString, CoverHint> m_coverHints;
 
@@ -598,6 +606,9 @@ private:
     QMap<QString, QString> m_categorySavePaths;
     // Tags per torrent (hash -> list of tag names)
     QMap<QString, QStringList> m_torrentTags;
+    // User-chosen display name per torrent (hash -> name); overrides the
+    // immutable metadata name in the list. See renameTorrent().
+    QMap<QString, QString> m_customNames;
 
     // VPN / Interface binding
     QString m_outgoingInterface;

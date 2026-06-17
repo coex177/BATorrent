@@ -170,6 +170,14 @@ SessionManager::SessionManager(QObject *parent)
     }
     settings.endGroup();
 
+    settings.beginGroup("torrentNames");
+    for (const auto &key : settings.childKeys()) {
+        const QString name = settings.value(key).toString();
+        if (!name.isEmpty())
+            m_customNames[key] = name;
+    }
+    settings.endGroup();
+
     // Load per-torrent stop-after overrides
     settings.beginGroup("torrentStopAfter");
     for (const auto &key : settings.childKeys())
@@ -535,6 +543,8 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
         }
         if (m_torrentTags.remove(hash))
             QSettings("BATorrent", "BATorrent").remove("torrentTags/" + hash);
+        if (m_customNames.remove(hash))
+            QSettings("BATorrent", "BATorrent").remove("torrentNames/" + hash);
         m_removedHashes.insert(hash);
         if (m_removedHashes.size() > 500) m_removedHashes.clear();
 
@@ -548,6 +558,7 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
         m_lastFastAt.erase(h);
         m_pendingResumeStripCheck.erase(h);
         m_magnetAddedAt.erase(h);
+        m_renameOldRoots.erase(h);
 
         // "delete files" sends the data to the OS trash instead of erasing it —
         // recoverable removal is a safety net users expect from a desktop app.
@@ -697,6 +708,8 @@ TorrentInfo SessionManager::torrentAt(int index) const
     if (!hash.isEmpty()) {
         info.category = m_categories.value(hash);
         info.tags = m_torrentTags.value(hash);
+        const QString custom = m_customNames.value(hash);
+        if (!custom.isEmpty()) info.name = custom;
     }
 
     return info;
@@ -1006,6 +1019,76 @@ void SessionManager::renameFile(int torrentIndex, int fileIndex,
     if (!m_torrents[torrentIndex].is_valid()) return;
     m_torrents[torrentIndex].rename_file(
         lt::file_index_t(fileIndex), newRelativePath.toStdString());
+}
+
+// Remove `root` and any empty subdirectories, but never anything containing a
+// file. Returns true when `root` itself is gone (so the caller can stop
+// retrying). Used to clear the empty folder libtorrent leaves behind after a
+// top-level rename re-roots every file into a new folder.
+static bool pruneEmptyDir(const QString &root)
+{
+    QDir dir(root);
+    if (!dir.exists()) return true;
+    const auto subdirs = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot
+                                           | QDir::Hidden | QDir::System);
+    for (const auto &sd : subdirs)
+        pruneEmptyDir(sd.absoluteFilePath());
+    // Files still present → the rename hasn't finished; leave it for next time.
+    if (!dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot
+                           | QDir::Hidden | QDir::System).isEmpty())
+        return false;
+    return QDir().rmdir(root);
+}
+
+void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
+{
+    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
+        return;
+    if (!m_torrents[torrentIndex].is_valid()) return;
+    const QString trimmed = newName.trimmed();
+    if (trimmed.isEmpty()) return;
+
+    lt::torrent_handle &h = m_torrents[torrentIndex];
+
+    // On-disk rename — only possible once metadata is present.
+    if (auto ti = h.torrent_file(); ti && ti->num_files() > 0) {
+        const lt::file_storage &fs = ti->files();
+        const std::string first = fs.file_path(lt::file_index_t(0));
+        const bool inRootFolder =
+            first.find('/') != std::string::npos || first.find('\\') != std::string::npos;
+
+        if (!inRootFolder) {
+            // Single file at the save-path root: the new name is the filename.
+            h.rename_file(lt::file_index_t(0), trimmed.toStdString());
+        } else {
+            // Re-root every file under the new top-level folder. Paths are read
+            // from the live snapshot (which already reflects prior renames and
+            // any ".!bt" in-progress suffix), so those are preserved.
+            const std::string oldRoot = fs.name();
+            const std::string newRoot = trimmed.toStdString();
+            if (!oldRoot.empty() && newRoot != oldRoot) {
+                for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
+                    std::string p = fs.file_path(i);
+                    if (p.size() > oldRoot.size()
+                        && p.compare(0, oldRoot.size(), oldRoot) == 0
+                        && (p[oldRoot.size()] == '/' || p[oldRoot.size()] == '\\'))
+                        h.rename_file(i, newRoot + p.substr(oldRoot.size()));
+                }
+                // libtorrent moves the files into the new folder but leaves the
+                // old (now-empty) one on disk. Remember it so the file_renamed
+                // alerts can prune it once every file has actually moved.
+                const QString save = QString::fromStdString(cachedStatus(h).save_path);
+                m_renameOldRoots[h] = QDir(save).filePath(QString::fromStdString(oldRoot));
+            }
+        }
+    }
+
+    const QString hash = torrentHash(torrentIndex);
+    if (!hash.isEmpty()) {
+        m_customNames[hash] = trimmed;
+        QSettings("BATorrent", "BATorrent").setValue("torrentNames/" + hash, trimmed);
+    }
+    emit torrentsUpdated();
 }
 
 void SessionManager::moveStorage(int torrentIndex, const QString &newSavePath)
@@ -2398,6 +2481,14 @@ void SessionManager::processAlerts()
             // disk; a recheck is the only safe recovery.
             if (sm->handle.is_valid())
                 sm->handle.force_recheck();
+        }
+        // After a top-level rename, libtorrent re-roots each file into the new
+        // folder (one alert per file) but leaves the old folder behind. Once the
+        // last file has moved the old tree is empty, so prune it then.
+        if (auto *fr = lt::alert_cast<lt::file_renamed_alert>(a)) {
+            auto it = m_renameOldRoots.find(fr->handle);
+            if (it != m_renameOldRoots.end() && pruneEmptyDir(it->second))
+                m_renameOldRoots.erase(it);
         }
         if (auto *lf = lt::alert_cast<lt::listen_failed_alert>(a)) {
             emit torrentError(QString::fromStdString(lf->message()));

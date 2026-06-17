@@ -36,7 +36,8 @@ Window {
             { k: "Ctrl+A", d: (i18n.language, i18n.t("sc_select_all")) },
             { k: (i18n.language, i18n.t("key_space")), d: (i18n.language, i18n.t("sc_pause_resume")) },
             { k: "Ctrl+R", d: (i18n.language, i18n.t("sc_recheck")) },
-            { k: "Ctrl+F", d: (i18n.language, i18n.t("sc_focus_search")) }
+            { k: "Ctrl+F", d: (i18n.language, i18n.t("sc_focus_search")) },
+            { k: "F2", d: (i18n.language, i18n.t("ctx_rename")) }
         ] },
         { title: (i18n.language, i18n.t("shortcuts_queue")), rows: [
             { k: "Ctrl+↑", d: (i18n.language, i18n.t("sc_queue_up")) },

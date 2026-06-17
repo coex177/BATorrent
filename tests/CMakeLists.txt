@@ -56,7 +56,7 @@ set(COMMON_LIBS
     Catch2::Catch2WithMain
 )
 if(WIN32)
-    list(APPEND COMMON_LIBS shell32 ole32)   # shell ops pulled in via the bridge deps
+    list(APPEND COMMON_LIBS shell32 ole32 dwmapi)   # shell ops + DWM title-bar (qmlthemebridge) via the bridge deps
 endif()
 
 set(COMMON_DEFS APP_VERSION="test")

@@ -228,7 +228,7 @@ public:
     Q_INVOKABLE int  selectedStopAfter() const;
     Q_INVOKABLE void setSelectedMaxSeedDays(int days);
     Q_INVOKABLE int  selectedMaxSeedDays() const;
-    Q_INVOKABLE void renameSelected(const QString &name);   // rename the torrent (file 0)
+    Q_INVOKABLE void renameSelected(const QString &name);   // rename torrent: on-disk file/folder + display name
     Q_INVOKABLE QString diagnoseSelectedSlow() const;       // "why is this slow" report
     Q_INVOKABLE void streamSelected();                      // prioritize video + open EXTERNAL player
     Q_INVOKABLE void playSelected();                        // prioritize video + open the embedded player

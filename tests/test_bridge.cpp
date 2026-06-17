@@ -69,6 +69,40 @@ static QString makeFixtureTorrent(const QString &dir)
     return out;
 }
 
+// Build a real, private single-file .torrent (no enclosing folder) under `dir`.
+static QString makeSingleFileTorrent(const QString &dir)
+{
+    const QString file = dir + "/single_fixture.bin";
+    { QFile f(file); f.open(QIODevice::WriteOnly); f.write(QByteArray(300, 'y')); f.close(); }
+
+    lt::file_storage fs;
+    lt::add_files(fs, file.toStdString());
+    lt::create_torrent ct(fs, 16384, lt::create_torrent::v1_only);
+    ct.add_tracker("udp://tracker.test:6969/announce", 0);
+    ct.set_priv(true);
+    lt::set_piece_hashes(ct, dir.toStdString());
+
+    std::vector<char> buf;
+    lt::bencode(std::back_inserter(buf), ct.generate());
+    const QString out = dir + "/single.torrent";
+    QFile f(out); f.open(QIODevice::WriteOnly);
+    f.write(buf.data(), static_cast<qsizetype>(buf.size()));
+    f.close();
+    return out;
+}
+
+// Reset persisted session state (resume data + the BATorrent settings store) so a
+// torrent-adding test starts from an empty session regardless of run order —
+// Catch2 randomizes test order and SessionManager saves/loads resume data from a
+// process-shared dir, which would otherwise leak torrents between cases.
+static void wipeBatState()
+{
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    QSettings s("BATorrent", "BATorrent");
+    s.clear();
+    s.sync();
+}
+
 // ============================================================================
 //  Headless Qt app singleton (offscreen) + isolated settings store
 // ============================================================================
@@ -293,6 +327,123 @@ TEST_CASE("Session bridge: a loaded torrent exposes and mutates files/trackers",
                 return true;
         return false;
     }));
+}
+
+// ============================================================================
+//  QmlSessionBridge — torrent-level rename (renameSelected -> renameTorrent):
+//  the on-disk file/folder AND the displayed name change, and the display name
+//  override persists. Regression: rename only touched file 0 and never updated
+//  the list name; multi-file torrents renamed nothing.
+// ============================================================================
+TEST_CASE("Session bridge: renaming a multi-file torrent re-roots files + overrides name", "[bridge][session][rename]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeFixtureTorrent(tmp.path());
+    QDir().mkpath(tmp.path() + "/dl");
+
+    SessionManager session;
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    session.addTorrent(torrentPath, tmp.path() + "/dl");
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    bridge.setSelectedRows({0});
+    REQUIRE(bridge.hasSelection());
+
+    REQUIRE(bridge.selectedName() == "bat_fixture");          // the folder name from create
+    const QString hash = session.torrentHashAt(0);            // full hash (selectedHash() is ellipsized for the UI)
+    REQUIRE_FALSE(hash.isEmpty());
+
+    bridge.renameSelected("Renamed Collection");
+
+    // Display name override is applied on the synchronous read path...
+    REQUIRE(bridge.selectedName() == "Renamed Collection");
+    // ...and persisted under the per-torrent names group.
+    REQUIRE(QSettings("BATorrent", "BATorrent")
+                .value("torrentNames/" + hash).toString() == "Renamed Collection");
+
+    // The top-level folder rename is async (libtorrent rename_file alerts):
+    // every file path re-roots under the new folder name.
+    REQUIRE(pumpUntil([&] {
+        const QVariantList fl = bridge.selectedFiles();
+        if (fl.size() != 2) return false;
+        for (const QVariant &v : fl)
+            if (!v.toMap().value("path").toString().contains("Renamed Collection"))
+                return false;
+        return true;
+    }));
+    wipeBatState();   // don't leak this torrent's resume data into the next case
+}
+
+TEST_CASE("Session bridge: folder rename moves data into the new folder and prunes the old one", "[bridge][session][rename]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeFixtureTorrent(tmp.path());
+    const QString save = tmp.path() + "/dl";
+
+    // Place the torrent's files at the save path with the ".!bt" suffix the app
+    // gives in-progress files, so libtorrent has real files on disk to move when
+    // the folder is renamed (same content as the fixture → byte sizes match).
+    QDir().mkpath(save + "/bat_fixture/sub");
+    auto put = [](const QString &p, int n){ QFile f(p); f.open(QIODevice::WriteOnly); f.write(QByteArray(n, 'x')); f.close(); };
+    put(save + "/bat_fixture/a.txt.!bt", 100);
+    put(save + "/bat_fixture/sub/b.txt.!bt", 200);
+
+    SessionManager session;
+    session.setAutoRecheck(false);   // skip recheck so the ".!bt" strip can't race the rename
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    session.addTorrent(torrentPath, save);
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    bridge.setSelectedRows({0});
+    REQUIRE(bridge.hasSelection());
+    REQUIRE(QFileInfo::exists(save + "/bat_fixture"));
+
+    bridge.renameSelected("Renamed Collection");
+
+    // Data ends up under the new folder and the empty old folder is pruned.
+    REQUIRE(pumpUntil([&] {
+        return QFileInfo::exists(save + "/Renamed Collection")
+            && !QFileInfo::exists(save + "/bat_fixture");
+    }, 15000));
+    wipeBatState();
+}
+
+TEST_CASE("Session bridge: renaming a single-file torrent renames the file + the name", "[bridge][session][rename]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeSingleFileTorrent(tmp.path());
+    QDir().mkpath(tmp.path() + "/dl");
+
+    SessionManager session;
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    session.addTorrent(torrentPath, tmp.path() + "/dl");
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    bridge.setSelectedRows({0});
+    REQUIRE(bridge.hasSelection());
+
+    REQUIRE(bridge.selectedName() == "single_fixture.bin");
+    bridge.renameSelected("renamed_single.bin");
+    REQUIRE(bridge.selectedName() == "renamed_single.bin");
+
+    REQUIRE(pumpUntil([&] {
+        const QVariantList fl = bridge.selectedFiles();
+        return fl.size() == 1
+            && fl.value(0).toMap().value("path").toString().contains("renamed_single.bin");
+    }));
+    wipeBatState();
 }
 
 // ============================================================================

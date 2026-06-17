@@ -15,6 +15,10 @@ BatDialog {
     cardW: 440
     cardH: 220
     okText: (i18n.language, i18n.t("btn_ok"))
+    // Enter is handled by the field below; turn off the base dialog's own
+    // Return shortcut so a focused field doesn't swallow it (and we never
+    // double-accept).
+    acceptOnReturn: false
 
     property string promptLabel: ""
     property string promptPlaceholder: ""
@@ -29,7 +33,8 @@ BatDialog {
         field.text = value || ""
         dlg.onAccept = cb
         dlg.open()
-        field.forceActiveFocus()
+        // defer until the dialog is shown so the editor can take focus
+        Qt.callLater(field.focusText)
     }
 
     ColumnLayout {
@@ -51,6 +56,7 @@ BatDialog {
             id: field
             Layout.fillWidth: true
             placeholder: dlg.promptPlaceholder
+            onAccepted: { dlg.accepted(); dlg.close() }
         }
     }
 }

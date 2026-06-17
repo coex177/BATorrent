@@ -512,8 +512,9 @@ int QmlSessionBridge::selectedMaxSeedDays() const
 void QmlSessionBridge::renameSelected(const QString &name)
 {
     if (hasSelection() && !name.trimmed().isEmpty())
-        m_session->renameFile(m_selectedIndex, 0, name.trimmed());
+        m_session->renameTorrent(m_selectedIndex, name.trimmed());
     emit selectionChanged(); emit selectionListsChanged();
+    emit queueRefreshNeeded();   // NameRole isn't a volatile role — force a full re-read
 }
 
 QString QmlSessionBridge::diagnoseSelectedSlow() const

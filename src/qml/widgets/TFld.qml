@@ -21,6 +21,10 @@ Rectangle {
     property bool password: false
     property bool clearable: false   // shows an ✕ to empty the field when it has text
     signal edited(string text)
+    signal accepted()                // Return/Enter pressed while focused
+
+    // Focus the inner editor and select its contents (Windows-style rename).
+    function focusText() { input.forceActiveFocus(); input.selectAll() }
 
     implicitWidth: 240
     implicitHeight: 34
@@ -56,6 +60,7 @@ Rectangle {
             background: null
             padding: 0
             onEditingFinished: fld.edited(text)
+            onAccepted: fld.accepted()
         }
         IconImg {
             visible: fld.clearable && input.text.length > 0

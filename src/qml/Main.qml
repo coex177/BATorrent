@@ -2862,6 +2862,10 @@ Window {
     Shortcut { sequences: [StandardKey.HelpContents]; onActivated: win.showWin(shortcutsWinLoader) }
     Shortcut { sequence: "Ctrl+F"; onActivated: searchInput.forceActiveFocus() }
     Shortcut { sequence: "Ctrl+R"; onActivated: if (typeof session !== "undefined") session.forceRecheckSelected() }
+    Shortcut {
+        sequence: "F2"; enabled: win.hasSel
+        onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) })
+    }
     // reorder queue: vertical in list, horizontal in grid (tiles sit side by side)
     Shortcut { sequence: "Ctrl+Up";    enabled: !win.gridView; onActivated: if (typeof session !== "undefined") session.queueUpSelected() }
     Shortcut { sequence: "Ctrl+Down";  enabled: !win.gridView; onActivated: if (typeof session !== "undefined") session.queueDownSelected() }
