@@ -22,6 +22,26 @@ Window {
 
     property int sec: 0
 
+    // Warn (once per open) when the watched folder is on but nothing clears the
+    // added .torrent files — a removed torrent would just get re-added.
+    property bool reorgWarned: false
+    onVisibleChanged: if (visible) reorgWarned = false
+    function reorgRiskActive() {
+        if (typeof settings === "undefined") return false
+        return (settings.get("watchedFolder") || "") !== ""
+            && !settings.get("deleteTorrentOnAdd")
+            && (settings.get("torrentMoveDir") || "") === ""
+    }
+    // Shows the warning if warranted; returns true when shown (so a Close caller
+    // can defer closing until the dialog is acknowledged).
+    function maybeWarnReorg(closeAfter) {
+        if (!reorgRiskActive() || reorgWarned) return false
+        reorgWarned = true
+        reorgDlg.closeAfter = closeAfter
+        reorgDlg.open()
+        return true
+    }
+
     // a stored bool pref, falling back to the field's `on` default when unset —
     // so a default-on toggle reads ON on a fresh profile (matches runtime behavior).
     function boolPref(field) {
@@ -41,6 +61,7 @@ Window {
     // ---- nav metadata ----
     readonly property var navs: [
         { nav: (i18n.language, i18n.t("detail_general")),               icon: "qrc:/icons/set-general.svg" },
+        { nav: (i18n.language, i18n.t("set_nav_downloads")),            icon: "qrc:/icons/download.svg" },
         { nav: (i18n.language, i18n.t("detail_kv_speed")),          icon: "qrc:/icons/set-speed.svg" },
         { nav: (i18n.language, i18n.t("settings_network")),                icon: "qrc:/icons/set-network.svg" },
         { nav: (i18n.language, i18n.t("set_nav_vpn")),   icon: "qrc:/icons/set-vpn.svg" },
@@ -53,6 +74,7 @@ Window {
 
     readonly property var heads: [
         { eyebrow: (i18n.language, i18n.t("set_eyebrow")), h: (i18n.language, i18n.t("detail_general")), sub: (i18n.language, i18n.t("set_sub_general")) },
+        { eyebrow: (i18n.language, i18n.t("set_eyebrow")), h: (i18n.language, i18n.t("set_nav_downloads")), sub: (i18n.language, i18n.t("set_sub_downloads")) },
         { eyebrow: (i18n.language, i18n.t("set_eyebrow")), h: (i18n.language, i18n.t("settings_speed")), sub: (i18n.language, i18n.t("set_sub_speed")) },
         { eyebrow: (i18n.language, i18n.t("set_eyebrow")), h: (i18n.language, i18n.t("settings_network")), sub: (i18n.language, i18n.t("set_sub_network")) },
         { eyebrow: (i18n.language, i18n.t("set_eyebrow")), h: (i18n.language, i18n.t("set_nav_vpn")), sub: (i18n.language, i18n.t("set_sub_vpn")) },
@@ -67,16 +89,6 @@ Window {
     readonly property var sections: [
         // 0 Geral
         [
-            { type: "group", label: (i18n.language, i18n.t("set_grp_downloads")) },
-            { type: "path", key: "lastSavePath", label: (i18n.language, i18n.t("set_default_save2")) },
-            { type: "toggle", key: "useDefaultPath", label: (i18n.language, i18n.t("settings_use_default_path")), on: true },
-            { type: "path", key: "tempPath", label: (i18n.language, i18n.t("set_temp_path2")), placeholder: (i18n.language, i18n.t("set_temp_path_ph")), note: (i18n.language, i18n.t("set_temp_path_note")) },
-            { type: "toggle", key: "autoMoveEnabled", label: (i18n.language, i18n.t("settings_automove")) },
-            { type: "path", key: "autoMovePath", label: (i18n.language, i18n.t("set_move_to2")), placeholder: (i18n.language, i18n.t("set_move_to_ph")) },
-            { type: "toggle", key: "preallocate", label: (i18n.language, i18n.t("set_preallocate")), note: (i18n.language, i18n.t("set_preallocate_note")) },
-            { type: "toggle", key: "autoRecheck", label: (i18n.language, i18n.t("set_auto_recheck")), note: (i18n.language, i18n.t("set_auto_recheck_note")) },
-            { type: "path", key: "watchedFolder", label: (i18n.language, i18n.t("set_watched_folder2")), placeholder: (i18n.language, i18n.t("settings_watched_hint")) },
-            { type: "toggle", key: "deleteTorrentOnAdd", label: (i18n.language, i18n.t("set_delete_torrent_on_add")), note: (i18n.language, i18n.t("set_delete_torrent_on_add_note")) },
             { type: "group", label: (i18n.language, i18n.t("set_grp_appearance")) },
             { type: "select", isLang: true, label: (i18n.language, i18n.t("set_language2")), options: ["English", "Português", "中文", "日本語", "Русский", "Español", "Deutsch", "Українська"], icons: ["qrc:/icons/flags/en.svg", "qrc:/icons/flags/pt.svg", "qrc:/icons/flags/zh.svg", "qrc:/icons/flags/ja.svg", "qrc:/icons/flags/ru.svg", "qrc:/icons/flags/es.svg", "qrc:/icons/flags/de.svg", "qrc:/icons/flags/uk.svg"], value: 0 },
             { type: "theme", label: (i18n.language, i18n.t("set_theme2")), options: [(i18n.language, i18n.t("set_theme_dark")), (i18n.language, i18n.t("set_theme_light")), "Midnight", "Sakura", "Dark Star", (i18n.language, i18n.t("set_theme_custom"))], value: 0 },
@@ -99,7 +111,24 @@ Window {
             { type: "toggle", key: "showSplash", label: (i18n.language, i18n.t("settings_show_splash")), on: true },
             { type: "button", action: "default", label: (i18n.language, i18n.t("set_default_app")), btn: (i18n.language, i18n.t("settings_set_default")) }
         ],
-        // 1 Velocidade
+        // 1 Downloads
+        [
+            { type: "group", label: (i18n.language, i18n.t("set_grp_save_location")) },
+            { type: "path", key: "lastSavePath", label: (i18n.language, i18n.t("set_default_save2")) },
+            { type: "toggle", key: "useDefaultPath", label: (i18n.language, i18n.t("settings_use_default_path")), on: true },
+            { type: "group", label: (i18n.language, i18n.t("set_grp_temp_move")) },
+            { type: "path", key: "tempPath", label: (i18n.language, i18n.t("set_temp_path2")), placeholder: (i18n.language, i18n.t("set_temp_path_ph")), note: (i18n.language, i18n.t("set_temp_path_note")) },
+            { type: "toggle", key: "autoMoveEnabled", label: (i18n.language, i18n.t("settings_automove")) },
+            { type: "path", key: "autoMovePath", label: (i18n.language, i18n.t("set_move_to2")), placeholder: (i18n.language, i18n.t("set_move_to_ph")) },
+            { type: "group", label: (i18n.language, i18n.t("set_grp_watch")) },
+            { type: "path", key: "watchedFolder", label: (i18n.language, i18n.t("set_watched_folder2")), placeholder: (i18n.language, i18n.t("settings_watched_hint")) },
+            { type: "toggle", key: "deleteTorrentOnAdd", label: (i18n.language, i18n.t("set_delete_torrent_on_add")), note: (i18n.language, i18n.t("set_delete_torrent_on_add_note")) },
+            { type: "path", key: "torrentMoveDir", label: (i18n.language, i18n.t("set_move_torrent_files")), placeholder: (i18n.language, i18n.t("set_move_torrent_files_ph")), note: (i18n.language, i18n.t("set_move_torrent_files_note")) },
+            { type: "group", label: (i18n.language, i18n.t("set_grp_disk")) },
+            { type: "toggle", key: "preallocate", label: (i18n.language, i18n.t("set_preallocate")), note: (i18n.language, i18n.t("set_preallocate_note")) },
+            { type: "toggle", key: "autoRecheck", label: (i18n.language, i18n.t("set_auto_recheck")), note: (i18n.language, i18n.t("set_auto_recheck_note")) }
+        ],
+        // 2 Velocidade
         [
             { type: "group", label: (i18n.language, i18n.t("set_grp_global_limits")) },
             { type: "number", key: "downloadLimit", label: (i18n.language, i18n.t("set_max_down2")), value: "0", suffix: "KB/s", note: (i18n.language, i18n.t("note_unlimited")) },
@@ -347,7 +376,8 @@ Window {
                                     elide: Text.ElideRight
                                 }
                             }
-                            MouseArea { id: nrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: win.sec = index }
+                            MouseArea { id: nrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: { if (win.sec === 1 && index !== 1) win.maybeWarnReorg(false); win.sec = index } }
                         }
                     }
                 }
@@ -466,7 +496,7 @@ Window {
                 anchors.rightMargin: 20
                 Text { text: (i18n.language, i18n.t("set_changes_instant")); color: Theme.t4; font.pixelSize: 11; font.family: Theme.fontSans }
                 Item { Layout.fillWidth: true }
-                BtnFlat { primary: true; text: (i18n.language, i18n.t("btn_close")); onClicked: win.close() }
+                BtnFlat { primary: true; text: (i18n.language, i18n.t("btn_close")); onClicked: if (!win.maybeWarnReorg(true)) win.close() }
             }
         }
     }
@@ -1073,6 +1103,26 @@ Window {
             text: infoDlg.message
             color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans
             wrapMode: Text.WordWrap
+        }
+    }
+
+    Dialog {
+        id: reorgDlg
+        property bool closeAfter: false
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Ok
+        onAccepted: if (reorgDlg.closeAfter) win.close()
+        contentItem: Item {
+            implicitWidth: 440
+            implicitHeight: reorgTxt.implicitHeight
+            Text {
+                id: reorgTxt
+                width: parent.width
+                text: (i18n.language, i18n.t("set_reorg_warn_body"))
+                color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans
+                wrapMode: Text.WordWrap
+            }
         }
     }
 
