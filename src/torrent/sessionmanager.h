@@ -321,6 +321,11 @@ public:
     void setDeleteTorrentOnAdd(bool enabled);
     bool deleteTorrentOnAdd() const;
 
+    // Folder to move the source .torrent into after a successful add (empty =
+    // leave it where it is). Takes precedence over deleteTorrentOnAdd.
+    void setTorrentMoveDir(const QString &path);
+    QString torrentMoveDir() const;
+
     // Auto-move completed downloads
     void setAutoMove(bool enabled, const QString &path);
     bool autoMoveEnabled() const;
@@ -586,9 +591,11 @@ private:
     QString m_watchedFolder;
     QTimer *m_watchedFolderTimer = nullptr;
     void scanWatchedFolder();
-    // Auto-delete the source .torrent after adding (see setDeleteTorrentOnAdd).
+    // Post-add disposition of the source .torrent file (see setTorrentMoveDir /
+    // setDeleteTorrentOnAdd). disposeOfSourceTorrent() moves it, else deletes it.
     bool m_deleteTorrentOnAdd = false;
-    void deleteSourceTorrentIfEnabled(const QString &filePath);
+    QString m_torrentMoveDir;
+    void disposeOfSourceTorrent(const QString &filePath);
     // Auto-extract
     bool m_autoExtract = false;
     bool m_autoExtractDelete = false;

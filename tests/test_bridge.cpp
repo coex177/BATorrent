@@ -624,6 +624,53 @@ TEST_CASE("Session: the source .torrent is kept when deleteTorrentOnAdd is off",
     wipeBatState();
 }
 
+TEST_CASE("Session: torrentMoveDir moves the source .torrent into the chosen folder", "[bridge][session][add]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeFixtureTorrent(tmp.path());   // tmp/sample.torrent
+    const QString moveDir = tmp.path() + "/torrents";
+    QDir().mkpath(tmp.path() + "/dl");
+
+    SessionManager session;
+    session.setTorrentMoveDir(moveDir);   // folder doesn't exist yet — created on demand
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    REQUIRE(QFileInfo::exists(torrentPath));
+    session.addTorrent(torrentPath, tmp.path() + "/dl");
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    REQUIRE(pumpUntil([&] {
+        return !QFileInfo::exists(torrentPath)                      // moved out of source
+            && QFileInfo::exists(moveDir + "/sample.torrent");      // ...into the move folder
+    }));
+    wipeBatState();
+}
+
+TEST_CASE("Session: a move folder takes precedence over delete-on-add", "[bridge][session][add]")
+{
+    app();
+    wipeBatState();
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString torrentPath = makeFixtureTorrent(tmp.path());
+    const QString moveDir = tmp.path() + "/torrents";
+    QDir().mkpath(tmp.path() + "/dl");
+
+    SessionManager session;
+    session.setTorrentMoveDir(moveDir);
+    session.setDeleteTorrentOnAdd(true);   // both on → move should win (file preserved)
+    MetadataResolver resolver;
+    QmlSessionBridge bridge(&session, &resolver);
+
+    session.addTorrent(torrentPath, tmp.path() + "/dl");
+    REQUIRE(pumpUntil([&] { return session.torrentCount() == 1; }));
+    REQUIRE(pumpUntil([&] { return QFileInfo::exists(moveDir + "/sample.torrent"); }));
+    wipeBatState();
+}
+
 // ============================================================================
 //  SessionManager — speed/queue/network prefs persist across a "restart"
 //  Regression: the QWidget→QML migration left these setters writing only to the

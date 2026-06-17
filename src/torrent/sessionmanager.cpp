@@ -139,6 +139,7 @@ SessionManager::SessionManager(QObject *parent)
     QString watchPath = settings.value("watchedFolder").toString();
     if (!watchPath.isEmpty()) setWatchedFolder(watchPath);
     m_deleteTorrentOnAdd = settings.value("deleteTorrentOnAdd", false).toBool();
+    m_torrentMoveDir = settings.value("torrentMoveDir").toString();
 
     if (m_anonymousMode || m_forceIpv4 || m_ptMode) {
         // Apply immediately so the first session starts with the right pack;
@@ -331,7 +332,7 @@ void SessionManager::addTorrent(const QString &filePath, const QString &savePath
         stageResumeSave(h);   // persist now — an idle 0%/no-peer torrent never
 
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
-        deleteSourceTorrentIfEnabled(filePath);
+        disposeOfSourceTorrent(filePath);
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -378,7 +379,7 @@ void SessionManager::addTorrentWithPriorities(const QString &filePath,
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist immediately (see addTorrent)
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
-        deleteSourceTorrentIfEnabled(filePath);
+        disposeOfSourceTorrent(filePath);
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -3203,12 +3204,34 @@ void SessionManager::setDeleteTorrentOnAdd(bool enabled)
 
 bool SessionManager::deleteTorrentOnAdd() const { return m_deleteTorrentOnAdd; }
 
-void SessionManager::deleteSourceTorrentIfEnabled(const QString &filePath)
+void SessionManager::setTorrentMoveDir(const QString &path)
 {
-    if (!m_deleteTorrentOnAdd || filePath.isEmpty()) return;
-    // Recycle Bin first (recoverable, matching how torrent data is removed);
-    // fall back to a permanent delete if the volume has no trash.
-    if (!QFile::moveToTrash(filePath)) QFile::remove(filePath);
+    m_torrentMoveDir = path;
+    QSettings("BATorrent", "BATorrent").setValue("torrentMoveDir", path);
+}
+
+QString SessionManager::torrentMoveDir() const { return m_torrentMoveDir; }
+
+void SessionManager::disposeOfSourceTorrent(const QString &filePath)
+{
+    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return;
+
+    // A configured move folder wins (it's an explicit "keep them here" choice,
+    // so we never silently delete a file the user asked to organise).
+    if (!m_torrentMoveDir.isEmpty()) {
+        QDir dir(m_torrentMoveDir);
+        if (dir.exists() || dir.mkpath(".")) {
+            const QString dest = dir.filePath(QFileInfo(filePath).fileName());
+            QFile::remove(dest);                      // overwrite a stale same-named file
+            if (QFile::rename(filePath, dest)) return;
+        }
+        // move failed (bad path / cross-device) — fall through to delete-if-enabled
+    }
+
+    if (m_deleteTorrentOnAdd) {
+        // Recycle Bin first (recoverable); permanent delete if the volume has no trash.
+        if (!QFile::moveToTrash(filePath)) QFile::remove(filePath);
+    }
 }
 
 void SessionManager::scanWatchedFolder()
@@ -3225,12 +3248,11 @@ void SessionManager::scanWatchedFolder()
         QString savePath = s.value("lastSavePath",
             QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
         addTorrent(path, savePath);
-        // Move the .torrent to a "processed" subfolder to avoid re-adding —
-        // unless delete-on-add already removed it (nothing left to re-scan).
-        if (!QFileInfo::exists(path)) continue;
-        QDir processed(dir.filePath(".processed"));
-        if (!processed.exists()) processed.mkpath(".");
-        QFile::rename(path, processed.filePath(f));
+        // addTorrent moves/deletes the source per the user's settings (Move
+        // added .torrent files / Delete after adding). For a duplicate it skips
+        // that, so dispose here too; with neither option set the file just stays
+        // (re-scanned each tick, but skipped as a duplicate while it's loaded).
+        disposeOfSourceTorrent(path);
     }
 }
 

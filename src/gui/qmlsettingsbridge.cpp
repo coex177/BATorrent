@@ -191,6 +191,7 @@ QVariant QmlSettingsBridge::get(const QString &key) const
     if (key == "runOnComplete")       return s->runOnComplete();
     if (key == "watchedFolder")       return s->watchedFolder();
     if (key == "deleteTorrentOnAdd")  return s->deleteTorrentOnAdd();
+    if (key == "torrentMoveDir")      return s->torrentMoveDir();
     if (key == "autoMoveEnabled")     return s->autoMoveEnabled();
     if (key == "autoMovePath")        return s->autoMovePath();
     if (key == "autoComplete") {
@@ -385,6 +386,7 @@ void QmlSettingsBridge::set(const QString &key, const QVariant &v)
     else if (key == "runOnComplete")       s->setRunOnComplete(v.toString());
     else if (key == "watchedFolder")       s->setWatchedFolder(v.toString());
     else if (key == "deleteTorrentOnAdd")  s->setDeleteTorrentOnAdd(v.toBool());
+    else if (key == "torrentMoveDir")      s->setTorrentMoveDir(v.toString());
     else if (key == "autoMoveEnabled")     s->setAutoMove(v.toBool(), s->autoMovePath());
     else if (key == "autoMovePath")        s->setAutoMove(s->autoMoveEnabled(), v.toString());
     else if (key == "autoComplete") {
