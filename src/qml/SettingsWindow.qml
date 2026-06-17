@@ -873,9 +873,24 @@ Window {
             RowLayout {
                 spacing: Theme.sp2
                 TFld {
-                    implicitWidth: 220; implicitHeight: 30; mono: true; readonly: true
-                    text: (typeof settings !== "undefined" && field.key !== undefined) ? (settings.get(field.key) || "") : (field.value || "")
+                    id: pathFld
+                    implicitWidth: 220; implicitHeight: 30; mono: true
                     placeholder: field.placeholder || ""
+                    // Browse/Clear change the value externally (settings.changed),
+                    // so re-read it then — but never while the user is typing.
+                    function syncFromSettings() {
+                        if (pathFld.activeFocus) return
+                        pathFld.text = (typeof settings !== "undefined" && field.key !== undefined)
+                                     ? (settings.get(field.key) || "") : (field.value || "")
+                    }
+                    Component.onCompleted: syncFromSettings()
+                    onEdited: function(t) {
+                        if (typeof settings !== "undefined" && field.key !== undefined) settings.set(field.key, t)
+                    }
+                    Connections {
+                        target: (typeof settings !== "undefined") ? settings : null
+                        function onChanged() { pathFld.syncFromSettings() }
+                    }
                 }
                 BtnFlat {
                     text: (i18n.language, i18n.t("settings_browse")); sm: true
