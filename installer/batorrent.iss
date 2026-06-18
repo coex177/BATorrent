@@ -3,17 +3,23 @@
 
 ; Version is injected by CI via ISCC /DMyAppVersion=x.y.z; fallback for local builds.
 #ifndef MyAppVersion
-  #define MyAppVersion "4.1.0"
+  #define MyAppVersion "4.1.0a"
+#endif
+; Windows VERSIONINFO must be numeric (x.x.x.x); the displayed version may carry
+; a suffix like "a". CI passes a numeric MyAppVersion so the fallback works;
+; for suffixed builds, pass /DMyAppVersionNumeric=x.y.z.w.
+#ifndef MyAppVersionNumeric
+  #define MyAppVersionNumeric MyAppVersion + ".0"
 #endif
 
 [Setup]
 AppName=BATorrent
 AppVersion={#MyAppVersion}
 AppVerName=BATorrent {#MyAppVersion}
-AppPublisher=Mateuscruz19
-AppPublisherURL=https://github.com/Mateuscruz19/BATorrent
-AppSupportURL=https://github.com/Mateuscruz19/BATorrent/issues
-AppUpdatesURL=https://github.com/Mateuscruz19/BATorrent/releases
+AppPublisher=coex177
+AppPublisherURL=https://github.com/coex177/BATorrent
+AppSupportURL=https://github.com/coex177/BATorrent/issues
+AppUpdatesURL=https://github.com/coex177/BATorrent/releases
 DefaultDirName={autopf}\BATorrent
 DefaultGroupName=BATorrent
 OutputDir=..\output
@@ -42,12 +48,12 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; our dark wizard the EULA text rendered black-on-dark with no reliable fix. MIT
 ; doesn't require click-through acceptance — the license still ships as the
 ; LICENSE file in the install dir and shows in the app's About dialog.
-VersionInfoVersion={#MyAppVersion}.0
-VersionInfoCompany=Mateuscruz19
+VersionInfoVersion={#MyAppVersionNumeric}
+VersionInfoCompany=coex177
 VersionInfoDescription=BATorrent - A modern BitTorrent client
 VersionInfoCopyright=Copyright (c) 2024-2026 Mateus Cruz
 VersionInfoProductName=BATorrent
-VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersionNumeric}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

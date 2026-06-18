@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(BATorrent VERSION 4.1.0)
+# Suffix appended to the displayed/reported version (CMake's project VERSION must
+# stay numeric). "a" = alpha; set to "" for a final release.
+set(BAT_VERSION_SUFFIX "a")
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Svg Multimedia Quick QuickWidgets QuickControls2)
 find_package(LibtorrentRasterbar REQUIRED)
 # Optional: QtKeychain stores credentials in the platform keyring (DPAPI on
@@ -55,7 +58,7 @@ add_executable(BATorrent WIN32 MACOSX_BUNDLE
     ${WIN_RC}
     ${MACOSX_APP_ICON}
 )
-target_compile_definitions(BATorrent PRIVATE APP_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(BATorrent PRIVATE APP_VERSION="${PROJECT_VERSION}${BAT_VERSION_SUFFIX}")
 
 if(DEFINED ENV{BAT_TMDB_KEY})
     target_compile_definitions(BATorrent PRIVATE BAT_TMDB_KEY="$ENV{BAT_TMDB_KEY}")
