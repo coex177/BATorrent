@@ -596,12 +596,14 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
             }
         }
 
+        // Stop the torrent before removing so libtorrent stops writing and starts
+        // releasing its file handles right away. The data can't be trashed while
+        // those handles are open (Windows sharing violation), and a busy torrent
+        // with many files can take several seconds to fully let go — so wait a
+        // couple of seconds, then retry with backoff over a generous window.
+        h.pause();
         m_session.remove_torrent(h, {});
         if (!trashTargets.isEmpty()) {
-            // An actively-downloading torrent keeps its files open; libtorrent
-            // only releases the handles a moment after remove_torrent. Until
-            // then moveToTrash fails with a sharing violation, so retry with
-            // backoff instead of trying once and silently leaving data on disk.
             auto remaining = std::make_shared<QStringList>(trashTargets);
             auto attempt   = std::make_shared<int>(0);
             auto trash     = std::make_shared<std::function<void()>>();
@@ -613,13 +615,13 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
                 }
                 *remaining = stillLocked;
                 if (remaining->isEmpty()) return;
-                if (++(*attempt) >= 10) {
+                if (++(*attempt) >= 25) {                           // ~27s total before giving up
                     qWarning() << "[session] moveToTrash gave up, left on disk:" << *remaining;
                     return;
                 }
-                QTimer::singleShot(600, this, *trash);
+                QTimer::singleShot(1000, this, *trash);
             };
-            QTimer::singleShot(700, this, *trash);
+            QTimer::singleShot(2000, this, *trash);
         }
     } catch (const std::exception &e) {
         qWarning() << "[session] removeTorrent exception:" << e.what();
