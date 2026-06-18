@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **Este é um fork não oficial.** Você está vendo o fork pessoal de [**coex177**](https://github.com/coex177), não o projeto oficial. Ele acompanha o upstream e adiciona algumas correções e melhorias de usabilidade (veja [O que muda neste fork](#o-que-muda-neste-fork)). Não é afiliado, apoiado nem endossado pelo autor original.
+>
+> - **Projeto original:** [BATorrent-app/BATorrent](https://github.com/BATorrent-app/BATorrent), de Mateus Cruz. Use-o para builds oficiais, multiplataforma e assinados (Microsoft Store / Homebrew / AppImage).
+> - **Builds deste fork:** [releases do coex177/BATorrent](https://github.com/coex177/BATorrent/releases), atualmente um **alpha só para Windows** (`v4.1.0a`).
+
 <p align="center">
   <a href="README.md">English</a> | <b>Português</b> | <a href="README.zh-CN.md">中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ru.md">Русский</a> | <a href="README.es.md">Español</a> | <a href="README.de.md">Deutsch</a> | <a href="README.ua.md">Українська</a>
 </p>
@@ -13,11 +19,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BATorrent-app/BATorrent/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/BATorrent-app/BATorrent?style=flat-square&color=dc2626"></a>
-  <a href="https://github.com/BATorrent-app/BATorrent/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/BATorrent-app/BATorrent/total?style=flat-square&color=dc2626"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/BATorrent-app/BATorrent?style=flat-square&color=dc2626"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/Windows%20·%20macOS%20·%20Linux-dc2626?style=flat-square">
-  <a href="https://apps.microsoft.com/detail/9n4l3tq24rc6"><img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-get-dc2626?style=flat-square&logo=microsoft"></a>
+  <a href="https://github.com/coex177/BATorrent/releases"><img alt="Fork release" src="https://img.shields.io/github/v/release/coex177/BATorrent?include_prereleases&style=flat-square&color=dc2626&label=fork%20release"></a>
+  <a href="https://github.com/coex177/BATorrent/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/coex177/BATorrent/total?style=flat-square&color=dc2626"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/coex177/BATorrent?style=flat-square&color=dc2626"></a>
+  <img alt="Fork build" src="https://img.shields.io/badge/fork%20build-Windows%20x86__64%20·%20alpha-dc2626?style=flat-square">
 </p>
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
@@ -32,7 +37,24 @@ A maioria dos clientes de torrent parece uma declaração de imposto de renda. E
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
+## O que muda neste fork
+
+Este fork é baseado no BATorrent original **v4.1.0** e adiciona um conjunto de correções e melhorias de usabilidade. Tudo abaixo desta seção descreve o app original e também se aplica ao fork.
+
+- **Renomear faz o serviço completo.** Renomear um torrent agora atualiza o arquivo ou a pasta no disco *e* o nome mostrado na lista, e a pasta vazia antiga é removida em seguida. Pressione **F2** para renomear; o diálogo foca o campo e aceita no Enter.
+- **Remover é confiável.** A exclusão agora trata toda a seleção múltipla (não só o último item clicado), remove a pasta de nível superior do disco quando "também excluir os arquivos" está ligado, e exclui de forma confiável torrents que ainda estão baixando, parando-os primeiro.
+- **Preferências reorganizadas.** Uma aba **Downloads** dedicada; campos de caminho editáveis que atualizam após o Procurar; uma opção "Mover arquivos `.torrent` adicionados" e uma opção "Excluir o arquivo `.torrent` após adicionar" (substitui a antiga pasta oculta `.processed`); um botão **Reiniciar** no ícone do app; e um aviso caso a pasta monitorada possa readicionar silenciosamente um torrent que você acabou de remover.
+- **Menu da bandeja funcionando no Windows.** O ícone na bandeja do sistema agora tem um menu de clique direito no Windows (Mostrar, Abrir torrent/magnet, Pausar/Retomar tudo, Preferências, Sair).
+- **Acabamento.** Diálogos de configurações e de prompt com o tema do app, um diálogo Sobre com botão **Fechar** padrão e uma revisão dos textos em inglês.
+
+> [!NOTE]
+> Duas limitações conhecidas deste fork: por enquanto os builds são **só para Windows** (as versões oficiais multiplataforma vêm do upstream), e o atualizador embutido ainda consulta os releases do projeto **original**, então ele não sinaliza as versões deste fork como atualizações.
+
+<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
+
 ## Por que isto existe
+
+*A seção abaixo é do autor original, Mateus Cruz:*
 
 Sou um desenvolvedor sozinho no Brasil. Eu queria um cliente de torrent que levasse privacidade a sério, rodasse nativamente em todo desktop e não parecesse ter sido feito em 2009 — e como não achei nenhum, criei o meu. É grátis e **licenciado sob a MIT**: sem pegadinhas, sem telemetria aparecendo depois e sem poder ser vendido caladinho para uma empresa que enfia anúncios. Oito idiomas, porque "útil" não devia significar "só em inglês".
 
@@ -79,6 +101,14 @@ Prioridade por arquivo · download sequencial · injeção automática de tracke
 
 ## Baixar
 
+**Este fork** oferece um único build: um instalador alpha para Windows.
+
+| | | |
+|---|---|---|
+| **Este fork (Windows)** | [Instalador `v4.1.0a`](https://github.com/coex177/BATorrent/releases/latest) (`BATorrent-setup-x86_64.exe`). Instalação por usuário, sem admin. | Windows 10/11 · x86_64 · **alpha** |
+
+Para builds **oficiais, assinados e multiplataforma**, use o projeto original:
+
 | Plataforma | | |
 |---|---|---|
 | **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9n4l3tq24rc6) · [Instalador](https://github.com/BATorrent-app/BATorrent/releases/latest) · [Portátil](https://github.com/BATorrent-app/BATorrent/releases/latest) | Windows 10+ |
@@ -123,8 +153,10 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ./build/B
 
 ## Contribuindo
 
-Issues e PRs são bem-vindos — para qualquer coisa não-trivial, abra uma issue antes. Relatos de bug: inclua sua plataforma + versão (`Ajuda → Sobre`) e os passos para reproduzir. Traduções são especialmente bem-vindas.
+Para problemas **específicos deste fork**, abra issues em [coex177/BATorrent](https://github.com/coex177/BATorrent/issues). Para o app original, use o [repositório upstream](https://github.com/BATorrent-app/BATorrent). Relatos de bug: inclua sua plataforma + versão (`Ajuda → Sobre`) e os passos para reproduzir.
 
 ## Licença
 
-[MIT](LICENSE) © 2024–2026 Mateus Cruz · feito no Brasil 🦇
+[MIT](LICENSE) © 2024–2026 Mateus Cruz (autor original) · feito no Brasil 🦇
+
+Este fork é mantido por [coex177](https://github.com/coex177) e permanece sob a mesma licença MIT.

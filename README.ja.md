@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **これは非公式のフォークです。** これは [**coex177**](https://github.com/coex177) の個人フォークであり、公式プロジェクトではありません。upstream を追従しつつ、いくつかの修正と使い勝手の改善を加えています（[このフォークの変更点](#このフォークの変更点)を参照）。原作者とは無関係で、支援・承認も受けていません。
+>
+> - **オリジナルのプロジェクト:** Mateus Cruz による [BATorrent-app/BATorrent](https://github.com/BATorrent-app/BATorrent)。公式・クロスプラットフォーム・署名済みのビルド（Microsoft Store / Homebrew / AppImage）はこちらを使ってください。
+> - **このフォークのビルド:** [coex177/BATorrent のリリース](https://github.com/coex177/BATorrent/releases)。現状は **Windows 専用のアルファ版**（`v4.1.0a`）です。
+
 <p align="center">
   <a href="README.md">English</a> | <a href="README.pt-BR.md">Português</a> | <a href="README.zh-CN.md">中文</a> | <b>日本語</b> | <a href="README.ru.md">Русский</a> | <a href="README.es.md">Español</a> | <a href="README.de.md">Deutsch</a> | <a href="README.ua.md">Українська</a>
 </p>
@@ -13,11 +19,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BATorrent-app/BATorrent/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/BATorrent-app/BATorrent?style=flat-square&color=dc2626"></a>
-  <a href="https://github.com/BATorrent-app/BATorrent/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/BATorrent-app/BATorrent/total?style=flat-square&color=dc2626"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/BATorrent-app/BATorrent?style=flat-square&color=dc2626"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/Windows%20·%20macOS%20·%20Linux-dc2626?style=flat-square">
-  <a href="https://apps.microsoft.com/detail/9n4l3tq24rc6"><img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-get-dc2626?style=flat-square&logo=microsoft"></a>
+  <a href="https://github.com/coex177/BATorrent/releases"><img alt="Fork release" src="https://img.shields.io/github/v/release/coex177/BATorrent?include_prereleases&style=flat-square&color=dc2626&label=fork%20release"></a>
+  <a href="https://github.com/coex177/BATorrent/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/coex177/BATorrent/total?style=flat-square&color=dc2626"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/coex177/BATorrent?style=flat-square&color=dc2626"></a>
+  <img alt="Fork build" src="https://img.shields.io/badge/fork%20build-Windows%20x86__64%20·%20alpha-dc2626?style=flat-square">
 </p>
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
@@ -32,7 +37,24 @@
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
+## このフォークの変更点
+
+このフォークはオリジナルの BATorrent **v4.1.0** をベースに、いくつかの修正と使い勝手の改善を加えたものです。このセクションより下の内容はオリジナルのアプリの説明で、フォークにもそのまま当てはまります。
+
+- **名前変更がすべてを処理。** トレントの名前変更が、ディスク上のファイルまたはフォルダー *と* リストに表示される名前の両方を更新し、空になった古いフォルダーも後片付けします。**F2** で名前変更でき、ダイアログは入力欄にフォーカスして Enter で確定します。
+- **削除が確実に。** 削除が複数選択をすべて処理するようになり（最後にクリックした項目だけではありません）、「ファイルも削除」がオンのときはディスク上の最上位フォルダーも削除し、まだアクティブにダウンロード中のトレントも、先に停止してから確実に削除します。
+- **設定の再構成。** 専用の **ダウンロード** タブ、参照後に更新される編集可能なパス欄、「追加した `.torrent` ファイルを移動」オプションと「追加後に `.torrent` ファイルを削除」オプション（旧来の隠し `.processed` フォルダーを置き換え）、アプリアイコン横の **再起動** ボタン、そして監視フォルダーが削除したばかりのトレントを黙って再追加しかねない場合の注意表示を追加。
+- **Windows でトレイメニューが機能。** システムトレイのアイコンに Windows で右クリックメニューが付きました（表示、トレント/マグネットを開く、すべて一時停止/再開、設定、終了）。
+- **仕上げ。** アプリのテーマに合わせた設定・入力ダイアログ、デフォルトで **閉じる** ボタンを持つバージョン情報ダイアログ、英語テキストの見直し。
+
+> [!NOTE]
+> このフォークの既知の制限が2つあります。ビルドは今のところ **Windows 専用** で（公式のクロスプラットフォーム版は upstream から提供されます）、内蔵のアップデーターは依然として **オリジナル** プロジェクトのリリースを確認するため、このフォークのバージョンを更新として通知しません。
+
+<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
+
 ## なぜ作ったのか
+
+*以下のセクションは原作者 Mateus Cruz によるものです:*
 
 私はブラジルの個人開発者です。プライバシーを真剣に扱い、どのデスクトップでもネイティブに動き、2009年製のような見た目ではないトレントクライアントが欲しかった — でも見つからなかったので、自分で作りました。無料で **MIT ライセンス** です。隠れた条件もなく、後からテレメトリが忍び込むこともなく、広告を付け足す会社にこっそり売られることもありません。8つの言語に対応 — 「使える」が「英語だけ」を意味すべきではないからです。
 
@@ -79,6 +101,14 @@
 
 ## 入手
 
+**このフォーク** が提供するビルドは1つだけ、Windows 向けのアルファ版インストーラーです。
+
+| | | |
+|---|---|---|
+| **このフォーク（Windows）** | [`v4.1.0a` インストーラー](https://github.com/coex177/BATorrent/releases/latest)（`BATorrent-setup-x86_64.exe`）。ユーザー単位でインストール、管理者権限不要。 | Windows 10/11 · x86_64 · **アルファ** |
+
+**公式・署名済み・クロスプラットフォーム** のビルドは、オリジナルのプロジェクトを使ってください:
+
 | プラットフォーム | | |
 |---|---|---|
 | **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9n4l3tq24rc6) · [インストーラー](https://github.com/BATorrent-app/BATorrent/releases/latest) · [ポータブル版](https://github.com/BATorrent-app/BATorrent/releases/latest) | Windows 10+ |
@@ -123,8 +153,10 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ./build/B
 
 ## 貢献
 
-Issue と PR を歓迎します — 些細でないものは先に Issue を立ててください。バグ報告には、プラットフォーム + バージョン（`ヘルプ → バージョン情報`）と再現手順を添えてください。翻訳は特に歓迎します。
+**このフォーク固有** の問題は [coex177/BATorrent](https://github.com/coex177/BATorrent/issues) に Issue を立ててください。オリジナルのアプリについては [upstream のリポジトリ](https://github.com/BATorrent-app/BATorrent) をご利用ください。バグ報告には、プラットフォーム + バージョン（`ヘルプ → バージョン情報`）と再現手順を添えてください。
 
 ## ライセンス
 
-[MIT](LICENSE) © 2024–2026 Mateus Cruz · made in Brazil 🦇
+[MIT](LICENSE) © 2024–2026 Mateus Cruz（原作者）· made in Brazil 🦇
+
+このフォークは [coex177](https://github.com/coex177) が管理しており、同じ MIT ライセンスのままです。

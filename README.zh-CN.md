@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **这是一个非官方分支（fork）。** 你看到的是 [**coex177**](https://github.com/coex177) 的个人分支，而非官方项目。它跟随上游，并加入了一些修复和易用性改进（见[本分支的不同之处](#本分支的不同之处)）。它与原作者无关，未获得其支持或背书。
+>
+> - **原始项目：** Mateus Cruz 的 [BATorrent-app/BATorrent](https://github.com/BATorrent-app/BATorrent)。官方、跨平台、已签名的构建（Microsoft Store / Homebrew / AppImage）请用它。
+> - **本分支的构建：** [coex177/BATorrent 发布页](https://github.com/coex177/BATorrent/releases)，目前是 **仅 Windows 的 alpha 版**（`v4.1.0a`）。
+
 <p align="center">
   <a href="README.md">English</a> | <a href="README.pt-BR.md">Português</a> | <b>中文</b> | <a href="README.ja.md">日本語</a> | <a href="README.ru.md">Русский</a> | <a href="README.es.md">Español</a> | <a href="README.de.md">Deutsch</a> | <a href="README.ua.md">Українська</a>
 </p>
@@ -13,11 +19,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BATorrent-app/BATorrent/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/BATorrent-app/BATorrent?style=flat-square&color=dc2626"></a>
-  <a href="https://github.com/BATorrent-app/BATorrent/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/BATorrent-app/BATorrent/total?style=flat-square&color=dc2626"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/BATorrent-app/BATorrent?style=flat-square&color=dc2626"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/Windows%20·%20macOS%20·%20Linux-dc2626?style=flat-square">
-  <a href="https://apps.microsoft.com/detail/9n4l3tq24rc6"><img alt="Microsoft Store" src="https://img.shields.io/badge/Microsoft%20Store-get-dc2626?style=flat-square&logo=microsoft"></a>
+  <a href="https://github.com/coex177/BATorrent/releases"><img alt="Fork release" src="https://img.shields.io/github/v/release/coex177/BATorrent?include_prereleases&style=flat-square&color=dc2626&label=fork%20release"></a>
+  <a href="https://github.com/coex177/BATorrent/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/coex177/BATorrent/total?style=flat-square&color=dc2626"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/coex177/BATorrent?style=flat-square&color=dc2626"></a>
+  <img alt="Fork build" src="https://img.shields.io/badge/fork%20build-Windows%20x86__64%20·%20alpha-dc2626?style=flat-square">
 </p>
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
@@ -32,7 +37,24 @@
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
+## 本分支的不同之处
+
+本分支基于原版 BATorrent **v4.1.0**，加入了一批修复和易用性改进。本节以下的内容描述的是原版应用，同样适用于本分支。
+
+- **重命名一步到位。** 重命名一个种子现在会同时更新磁盘上的文件或文件夹 *以及* 列表中显示的名称，之后还会清理掉旧的空文件夹。按 **F2** 即可重命名；对话框会自动聚焦输入框，按 Enter 确认。
+- **删除更可靠。** 删除现在会处理整个多选（而不只是最后点选的那一项）；当开启「同时删除文件」时会从磁盘移除顶层文件夹；对仍在下载中的种子，会先停止再可靠地删除。
+- **重构的首选项。** 独立的 **下载** 选项卡；浏览后会刷新的可编辑路径字段；「移动已添加的 `.torrent` 文件」选项和「添加后删除 `.torrent` 文件」选项（取代旧的隐藏 `.processed` 文件夹）；应用图标旁的 **重启** 按钮；以及当监视文件夹可能把你刚删除的种子悄悄重新添加时的提醒。
+- **Windows 托盘菜单可用。** 系统托盘图标在 Windows 上现在有右键菜单（显示、打开种子/磁力、全部暂停/恢复、首选项、退出）。
+- **细节打磨。** 与应用主题一致的设置/提示对话框，「关于」对话框带默认的 **关闭** 按钮，以及对英文文案的梳理。
+
+> [!NOTE]
+> 本分支有两个已知限制：目前仅提供 **Windows** 构建（官方的跨平台版本来自上游），且内置更新检查仍然查询 **原版** 项目的发布，因此不会把本分支的版本标记为可更新。
+
+<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
+
 ## 为什么会有这个项目
+
+*以下部分出自原作者 Mateus Cruz：*
 
 我是巴西的一名独立开发者。我想要一个认真对待隐私、在每个桌面平台上原生运行、而且看起来不像 2009 年做的 BT 客户端 — 既然找不到，我就自己做了一个。它免费且采用 **MIT 许可**：没有附加条件，不会日后偷偷加入遥测，也不会被悄悄卖给一家加塞广告的公司。支持八种语言，因为「好用」不应该意味着「只有英文」。
 
@@ -79,6 +101,14 @@
 
 ## 获取
 
+**本分支** 只提供一个构建：Windows 的 alpha 安装程序。
+
+| | | |
+|---|---|---|
+| **本分支（Windows）** | [`v4.1.0a` 安装程序](https://github.com/coex177/BATorrent/releases/latest)（`BATorrent-setup-x86_64.exe`）。按用户安装，无需管理员权限。 | Windows 10/11 · x86_64 · **alpha** |
+
+需要 **官方、已签名、跨平台** 的构建，请改用原版项目：
+
 | 平台 | | |
 |---|---|---|
 | **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9n4l3tq24rc6) · [安装版](https://github.com/BATorrent-app/BATorrent/releases/latest) · [便携版](https://github.com/BATorrent-app/BATorrent/releases/latest) | Windows 10+ |
@@ -123,8 +153,10 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ./build/B
 
 ## 参与贡献
 
-欢迎提交 Issue 和 PR — 非琐碎的改动请先开 Issue。报告 Bug 时请附上你的平台 + 版本（`帮助 → 关于`）和复现步骤。尤其欢迎翻译。
+**本分支特有** 的问题，请到 [coex177/BATorrent](https://github.com/coex177/BATorrent/issues) 提 Issue。原版应用的问题请使用[上游仓库](https://github.com/BATorrent-app/BATorrent)。报告 Bug 时请附上你的平台 + 版本（`帮助 → 关于`）和复现步骤。
 
 ## 许可证
 
-[MIT](LICENSE) © 2024–2026 Mateus Cruz · 于巴西制作 🦇
+[MIT](LICENSE) © 2024–2026 Mateus Cruz（原作者）· 于巴西制作 🦇
+
+本分支由 [coex177](https://github.com/coex177) 维护，仍采用相同的 MIT 许可。
