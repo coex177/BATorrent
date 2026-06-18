@@ -502,17 +502,29 @@ Window {
                      ? "image://applogo/dark?v=l" : "image://applogo/light?v=d"
         icon.mask: false
         tooltip: "BATorrent"
-        // Left click / double click restores the window (Windows convention).
-        // Right click (Context) opens the rich painted popup instead of a
-        // native menu.
+        // This build doesn't auto-pop the assigned `menu` on right-click, but it
+        // does fire activated(Context) reliably — so open the menu explicitly.
         onActivated: function(reason) {
             if (reason === Platform.SystemTrayIcon.Trigger
                 || reason === Platform.SystemTrayIcon.DoubleClick) {
                 win.show(); win.raise(); win.requestActivate()
             } else if (reason === Platform.SystemTrayIcon.Context) {
-                trayPopup.popUpAt(trayIcon.geometry)
+                trayMenu.open()
             }
         }
+    }
+
+    Platform.Menu {
+        id: trayMenu
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_show"));         onTriggered: { win.show(); win.raise(); win.requestActivate() } }
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_open_torrent")); onTriggered: { win.show(); win.raise(); win.requestActivate(); openFileDlg.open() } }
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_open_magnet"));  onTriggered: { win.show(); win.raise(); win.requestActivate(); magnetDlg.open() } }
+        Platform.MenuSeparator {}
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_pause_all"));    onTriggered: if (typeof session !== "undefined") session.pauseAll() }
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_resume_all"));   onTriggered: if (typeof session !== "undefined") session.resumeAll() }
+        Platform.MenuSeparator {}
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_preferences"));  onTriggered: win.showWin(settingsWinLoader) }
+        Platform.MenuItem { text: (i18n.language, i18n.t("tray_quit"));         onTriggered: Qt.quit() }
     }
 
     // Background events → in-app toast (when the window is up) AND the native
@@ -634,17 +646,6 @@ Window {
                 toastHost.show(i18n.t("crash_toast_title"), i18n.t("crash_toast_body"), 1,
                                "crashreport", i18n.t("crash_toast_action"))
         }
-    }
-
-    TrayPopupWindow {
-        id: trayPopup
-        onShowApp:      { win.show(); win.raise(); win.requestActivate() }
-        onOpenTorrent:  { win.show(); win.raise(); win.requestActivate(); openFileDlg.open() }
-        onOpenMagnet:   { win.show(); win.raise(); win.requestActivate(); magnetDlg.open() }
-        onPauseAll:     if (typeof session !== "undefined") session.pauseAll()
-        onResumeAll:    if (typeof session !== "undefined") session.resumeAll()
-        onOpenSettings: { win.showWin(settingsWinLoader) }
-        onQuitApp:      Qt.quit()
     }
 
     // (IconImg vem de widgets/)
