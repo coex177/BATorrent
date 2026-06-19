@@ -620,7 +620,7 @@ Window {
             else if (actionId === "crashreport" && typeof logs !== "undefined")
                 Qt.openUrlExternally(logs.crashReportUrl())
             else if (actionId === "star")
-                Qt.openUrlExternally("https://github.com/BATorrent-app/BATorrent")
+                Qt.openUrlExternally("https://github.com/coex177/BATorrent")
         }
     }
 

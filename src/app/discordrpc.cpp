@@ -84,11 +84,11 @@ void DiscordRPC::setActivity(const QString &details, const QString &state, qint6
     QJsonArray buttons;
     QJsonObject dlBtn;
     dlBtn.insert("label", "Download BATorrent");
-    dlBtn.insert("url", "https://github.com/BATorrent-app/BATorrent/releases/latest");
+    dlBtn.insert("url", "https://github.com/coex177/BATorrent/releases/latest");
     buttons.append(dlBtn);
     QJsonObject ghBtn;
     ghBtn.insert("label", "View on GitHub");
-    ghBtn.insert("url", "https://github.com/BATorrent-app/BATorrent");
+    ghBtn.insert("url", "https://github.com/coex177/BATorrent");
     buttons.append(ghBtn);
     activity.insert("buttons", buttons);
     QJsonObject args;

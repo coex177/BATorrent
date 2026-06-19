@@ -16,9 +16,10 @@
 #include <QSysInfo>
 
 static const QString GITHUB_API =
-    "https://api.github.com/repos/BATorrent-app/BATorrent/releases/latest";
+    "https://api.github.com/repos/coex177/BATorrent/releases/latest";
+// Fork is GitHub-only; the legacy "gitee" channel points at the same fork releases.
 static const QString GITEE_API =
-    "https://gitee.com/api/v5/repos/Mateuscruz19/BATorrent/releases/latest";
+    "https://api.github.com/repos/coex177/BATorrent/releases/latest";
 
 // Read the configured release-info endpoint. Both GitHub and Gitee expose the
 // same JSON shape — `tag_name`, `assets[].browser_download_url`, `assets[].name`
