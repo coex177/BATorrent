@@ -51,7 +51,17 @@ Window {
     property int selected: -1          // focus row (drives the detail panel)
     property var selectedRows: []      // multi-selection (proxy rows)
     property int anchorRow: -1         // shift-range anchor
-    property bool gridView: true
+    // view: "grid" (posters) | "list" (rows + thumb) | "compact" (rows, no art).
+    // gridView/compactView are derived so the rest of the file keeps reading them.
+    property string viewMode: "grid"
+    readonly property bool gridView: viewMode === "grid"
+    readonly property bool compactView: viewMode === "compact"
+    readonly property int listRowH: compactView ? 40 : 56
+    function setViewMode(m) {
+        if (m !== "grid" && m !== "list" && m !== "compact") return
+        viewMode = m
+        if (typeof settings !== "undefined") settings.set("viewMode", m)
+    }
     property string activeFilter: "all"
     property string catFilter: ""
     // startup splash — shown on every launch unless disabled in Settings
@@ -63,6 +73,8 @@ Window {
             var sh = Number(settings.get("winHeight") || 0)
             if (sw >= win.minimumWidth && sw <= Screen.desktopAvailableWidth) win.width = sw
             if (sh >= win.minimumHeight && sh <= Screen.desktopAvailableHeight) win.height = sh
+            var vm = settings.get("viewMode")
+            if (vm === "grid" || vm === "list" || vm === "compact") win.viewMode = vm
         }
         showSplash = (typeof settings === "undefined") || settings.get("showSplash") !== false
         // start hidden in the tray if the user asked for it (and a tray exists)
@@ -456,7 +468,7 @@ Window {
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_pause_all")); onTriggered: if (typeof session !== "undefined") session.pauseAll() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_resume_all")); onTriggered: if (typeof session !== "undefined") session.resumeAll() }
             Platform.MenuSeparator {}
-            Platform.MenuItem { text: (i18n.language, i18n.t("menu_remove")); shortcut: StandardKey.Delete; enabled: win.hasSel; onTriggered: removeDlg.open() }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_remove")); enabled: win.hasSel; onTriggered: removeDlg.open() }
         }
         Platform.Menu {
             title: (i18n.language, i18n.t("menu_settings_title"))
@@ -772,6 +784,39 @@ Window {
             cursorShape: Qt.PointingHandCursor
             onClicked: pi.clicked()
         }
+    }
+
+    // one segment of the Grid/List/Compact view toggle
+    component ViewSeg: Rectangle {
+        id: vseg
+        property string mode
+        property string icon
+        property string label
+        readonly property bool active: win.viewMode === mode
+        implicitWidth: vsegRow.implicitWidth + 22
+        height: 28
+        radius: 6
+        color: active ? Qt.rgba(1,1,1,0.08) : "transparent"
+        Row {
+            id: vsegRow
+            anchors.centerIn: parent
+            spacing: 6
+            IconImg {
+                anchors.verticalCenter: parent.verticalCenter
+                src: vseg.icon
+                tint: vseg.active ? Theme.t1 : Theme.t3
+                s: 14
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: vseg.label
+                color: vseg.active ? Theme.t1 : Theme.t3
+                font.pixelSize: 12
+                font.weight: Font.Medium
+                font.family: Theme.fontSans
+            }
+        }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.setViewMode(vseg.mode) }
     }
 
     // ----- clickable list header column (sort) -----
@@ -1168,58 +1213,9 @@ Window {
                         anchors.centerIn: parent
                         spacing: 2
 
-                        Rectangle {
-                            implicitWidth: segGr.implicitWidth + 22
-                            height: 28
-                            radius: 6
-                            color: win.gridView ? Qt.rgba(1,1,1,0.08) : "transparent"
-                            Row {
-                                id: segGr
-                                anchors.centerIn: parent
-                                spacing: 6
-                                IconImg {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    src: "qrc:/icons/grid.svg"
-                                    tint: win.gridView ? Theme.t1 : Theme.t3
-                                    s: 14
-                                }
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: (i18n.language, i18n.t("view_grid"))
-                                    color: win.gridView ? Theme.t1 : Theme.t3
-                                    font.pixelSize: 12
-                                    font.weight: Font.Medium
-                                    font.family: Theme.fontSans
-                                }
-                            }
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.gridView = true }
-                        }
-                        Rectangle {
-                            implicitWidth: segLi.implicitWidth + 22
-                            height: 28
-                            radius: 6
-                            color: !win.gridView ? Qt.rgba(1,1,1,0.08) : "transparent"
-                            Row {
-                                id: segLi
-                                anchors.centerIn: parent
-                                spacing: 6
-                                IconImg {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    src: "qrc:/icons/list.svg"
-                                    tint: !win.gridView ? Theme.t1 : Theme.t3
-                                    s: 14
-                                }
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: (i18n.language, i18n.t("view_list"))
-                                    color: !win.gridView ? Theme.t1 : Theme.t3
-                                    font.pixelSize: 12
-                                    font.weight: Font.Medium
-                                    font.family: Theme.fontSans
-                                }
-                            }
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.gridView = false }
-                        }
+                        ViewSeg { mode: "grid";    icon: "qrc:/icons/grid.svg";    label: (i18n.language, i18n.t("view_grid")) }
+                        ViewSeg { mode: "list";    icon: "qrc:/icons/list.svg";    label: (i18n.language, i18n.t("view_list")) }
+                        ViewSeg { mode: "compact"; icon: "qrc:/icons/compact.svg"; label: (i18n.language, i18n.t("view_compact")) }
                     }
                 }
 
@@ -1419,6 +1415,7 @@ Window {
                 model: win.model
                 interactive: true
                 z: 1
+                ScrollBar.vertical: ScrollBar { id: gridVBar; policy: ScrollBar.AsNeeded; implicitWidth: 12 }
 
                 delegate: Item {
                     id: tile
@@ -1634,6 +1631,8 @@ Window {
             // MouseArea inside the Flickable never received these.
             MouseArea {
                 anchors.fill: grid
+                // keep the scrollbar's lane uncovered (only while the grid overflows)
+                anchors.rightMargin: grid.contentHeight > grid.height ? gridVBar.implicitWidth : 0
                 visible: win.gridView && !parent.empty
                 enabled: visible
                 z: 2
@@ -1656,48 +1655,60 @@ Window {
                 }
             }
 
+            // ----- LIST/COMPACT pinned column header (does not scroll) -----
+            Rectangle {
+                id: listHeader
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: 36
+                z: 2
+                visible: !win.gridView && !parent.empty
+                color: "transparent"
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.sp4
+                    anchors.rightMargin: Theme.sp4
+                    spacing: Theme.sp4
+
+                    HCol { label: (i18n.language, i18n.t("col_name")); col: "name"; fill: true }
+                    HCol { label: (i18n.language, i18n.t("col_size")); col: "size"; w: 78; alignRight: true }
+                    HCol { label: (i18n.language, i18n.t("col_progress")); col: "progress"; w: 104 }
+                    HCol { label: (i18n.language, i18n.t("col_down")); col: "down"; w: 78; alignRight: true }
+                    HCol { label: (i18n.language, i18n.t("col_up")); col: "up"; w: 78; alignRight: true }
+                    HCol { label: (i18n.language, i18n.t("col_state")); col: "state"; w: 110 }
+                    HCol { label: (i18n.language, i18n.t("col_category")); col: "category"; w: 90 }
+                    HCol { label: (i18n.language, i18n.t("col_peers")); col: "peers"; w: 56; alignRight: true }
+                    HCol { label: (i18n.language, i18n.t("col_added")); col: "added"; w: 104 }
+                }
+            }
+
             // ----- LIST -----
             ListView {
                 id: list
                 opacity: (!win.gridView && !parent.empty) ? 1 : 0
                 visible: opacity > 0.01
                 Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                // sits below the pinned column header in list/compact; fills in grid (hidden there)
+                anchors.top: win.gridView ? parent.top : listHeader.bottom
                 clip: true
                 model: win.model
                 interactive: true
                 z: 1
+                ScrollBar.vertical: ScrollBar { id: listVBar; policy: ScrollBar.AsNeeded; implicitWidth: 12 }
                 add: Transition { NumberAnimation { properties: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic } }
                 remove: Transition { NumberAnimation { properties: "opacity"; to: 0; duration: 120; easing.type: Easing.OutCubic } }
                 displaced: Transition { NumberAnimation { properties: "x,y"; duration: 180; easing.type: Easing.OutCubic } }
 
-                header: Rectangle {
-                    width: ListView.view.width
-                    height: 36
-                    color: "transparent"
-                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.sp4
-                        anchors.rightMargin: Theme.sp4
-                        spacing: Theme.sp4
-
-                        HCol { label: (i18n.language, i18n.t("col_name")); col: "name"; fill: true }
-                        HCol { label: (i18n.language, i18n.t("col_size")); col: "size"; w: 78; alignRight: true }
-                        HCol { label: (i18n.language, i18n.t("col_progress")); col: "progress"; w: 104 }
-                        HCol { label: (i18n.language, i18n.t("col_down")); col: "down"; w: 78; alignRight: true }
-                        HCol { label: (i18n.language, i18n.t("col_up")); col: "up"; w: 78; alignRight: true }
-                        HCol { label: (i18n.language, i18n.t("col_state")); col: "state"; w: 110 }
-                        HCol { label: (i18n.language, i18n.t("col_category")); col: "category"; w: 90 }
-                        HCol { label: (i18n.language, i18n.t("col_peers")); col: "peers"; w: 56; alignRight: true }
-                    }
-                }
-
                 delegate: Rectangle {
                     id: lrow
                     width: ListView.view.width
-                    height: 56
+                    height: win.listRowH
 
                     required property int index
                     required property string torrentName
@@ -1714,6 +1725,7 @@ Window {
                     required property string category
                     required property int numPeers
                     required property string posterPath
+                    required property var addedAt
 
                     readonly property string posterUrl: win.fileUrl(posterPath)
                     // the "stalled why" tooltip is driven by listArea (its z:2
@@ -1746,6 +1758,7 @@ Window {
                             spacing: Theme.sp3
                             PosterThumb {
                                 Layout.alignment: Qt.AlignVCenter
+                                visible: !win.compactView   // compact view drops the cover art
                                 posterUrl: lrow.posterUrl
                                 label: lrow.metaTitle || lrow.torrentName || ""
                             }
@@ -1843,6 +1856,17 @@ Window {
                             font.weight: Theme.hasAnime ? Font.Medium : Font.Normal
                             font.family: Theme.fontMono
                         }
+                        Text {
+                            text: Number(lrow.addedAt) > 0 ? new Date(Number(lrow.addedAt)).toLocaleDateString(Qt.locale(), Locale.ShortFormat) : "—"
+                            Layout.preferredWidth: 104
+                            color: Theme.hasAnime ? Theme.t1 : Theme.t3
+                            style: Theme.hasAnime ? Text.Outline : Text.Normal
+                            styleColor: Theme.isLight ? "#ffffff" : "#000000"
+                            font.pixelSize: 12
+                            font.weight: Theme.hasAnime ? Font.Medium : Font.Normal
+                            font.family: Theme.fontSans
+                            elide: Text.ElideRight
+                        }
                     }
                 }
             }
@@ -1851,6 +1875,9 @@ Window {
             MouseArea {
                 id: listArea
                 anchors.fill: list
+                // leave the scrollbar's lane uncovered (only when the list overflows)
+                // so the bar stays draggable instead of being eaten by this overlay
+                anchors.rightMargin: list.contentHeight > list.height ? listVBar.implicitWidth : 0
                 visible: !win.gridView && !parent.empty
                 enabled: visible
                 hoverEnabled: true
@@ -1859,7 +1886,7 @@ Window {
                 z: 2
 
                 property int hoveredRow: -1
-                readonly property int rowH: 56
+                readonly property int rowH: win.listRowH
                 property bool dragging: false
                 property real startX: 0
                 property real startY: 0
@@ -1945,7 +1972,7 @@ Window {
                         var top = marquee.y, bot = marquee.y + marquee.height
                         var rows = []
                         for (var i = 0; i < list.count; ++i) {
-                            var ry = list.headerItem.height + i * rowH - list.contentY
+                            var ry = i * rowH - list.contentY
                             if (ry + rowH > top && ry < bot) rows.push(i)
                         }
                         win.selectedRows = rows
@@ -2432,6 +2459,7 @@ Window {
                           inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), current, "",
                               function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) })
                       }
+                      onOpenFile: function(idx) { if (typeof session !== "undefined") session.openFileAt(idx) }
                   }
                   DetailTrackers { trackers: (win.hasSel && win.detailTab === 3) ? session.selectedTrackers : [] }
                   DetailPieces   { pieces:   (win.hasSel && win.detailTab === 4) ? session.selectedPieces   : [] }
@@ -2867,6 +2895,9 @@ Window {
         sequence: "F2"; enabled: win.hasSel
         onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) })
     }
+    // Delete → Remove dialog (an editable text field with focus overrides this,
+    // so it still deletes characters while typing). Mirrors F2 → Rename.
+    Shortcut { sequence: StandardKey.Delete; enabled: win.hasSel; onActivated: removeDlg.open() }
     // reorder queue: vertical in list, horizontal in grid (tiles sit side by side)
     Shortcut { sequence: "Ctrl+Up";    enabled: !win.gridView; onActivated: if (typeof session !== "undefined") session.queueUpSelected() }
     Shortcut { sequence: "Ctrl+Down";  enabled: !win.gridView; onActivated: if (typeof session !== "undefined") session.queueDownSelected() }

@@ -327,6 +327,9 @@ void SessionManager::addTorrent(const QString &filePath, const QString &savePath
 
         lt::torrent_handle h = m_session.add_torrent(atp);
         m_torrents.push_back(h);
+        if (atp.ti)
+            m_addedTimes[QString::fromStdString((std::ostringstream() << atp.ti->info_hashes().get_best()).str())]
+                = QDateTime::currentSecsSinceEpoch();
         incrementTorrentCount();
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist now — an idle 0%/no-peer torrent never
@@ -375,6 +378,9 @@ void SessionManager::addTorrentWithPriorities(const QString &filePath,
 
         lt::torrent_handle h = m_session.add_torrent(atp);
         m_torrents.push_back(h);
+        if (atp.ti)
+            m_addedTimes[QString::fromStdString((std::ostringstream() << atp.ti->info_hashes().get_best()).str())]
+                = QDateTime::currentSecsSinceEpoch();
         incrementTorrentCount();
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist immediately (see addTorrent)
@@ -428,6 +434,7 @@ void SessionManager::addMagnet(const QString &uri, const QString &savePath,
         m_torrents.push_back(h);
         m_magnetAddedAt[h] = QDateTime::currentSecsSinceEpoch();
         m_magnetHashes[h] = realHash;
+        m_addedTimes[realHash] = QDateTime::currentSecsSinceEpoch();
         incrementTorrentCount();
 
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
@@ -549,6 +556,7 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
             QSettings("BATorrent", "BATorrent").remove("torrentTags/" + hash);
         if (m_customNames.remove(hash))
             QSettings("BATorrent", "BATorrent").remove("torrentNames/" + hash);
+        m_addedTimes.remove(hash);
         m_removedHashes.insert(hash);
         if (m_removedHashes.size() > 500) m_removedHashes.clear();
 
@@ -730,6 +738,7 @@ TorrentInfo SessionManager::torrentAt(int index) const
     if (!hash.isEmpty()) {
         info.category = m_categories.value(hash);
         info.tags = m_torrentTags.value(hash);
+        info.addedAt = m_addedTimes.value(hash, 0);
         const QString custom = m_customNames.value(hash);
         if (!custom.isEmpty()) info.name = custom;
     }
@@ -2227,6 +2236,11 @@ void SessionManager::loadResumeData()
         }
         if (!h.is_valid()) continue;
         m_torrents.push_back(h);
+        if (atp.added_time > 0) {
+            const QString rhash = QString::fromStdString(
+                (std::ostringstream() << atp.info_hashes.get_best()).str());
+            if (!rhash.isEmpty()) m_addedTimes[rhash] = static_cast<qint64>(atp.added_time);
+        }
         if (recoveredFromCorrupt) {
             h.force_recheck();
         }

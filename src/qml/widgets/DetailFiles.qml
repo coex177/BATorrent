@@ -14,6 +14,7 @@ ColumnLayout {
     id: pane
     property var files: []
     signal renameFile(int idx, string current)
+    signal openFile(int idx)
     property int menuIdx: -1
     spacing: 0
 
@@ -26,6 +27,10 @@ ColumnLayout {
     BatMenu {
         id: fileMenu
         implicitWidth: 200
+        BatMenuItem {
+            text: (i18n.language, i18n.t("detailfiles_open"))
+            onTriggered: { if (pane.menuIdx >= 0) pane.openFile(pane.menuIdx) }
+        }
         BatMenuItem {
             text: (i18n.language, i18n.t("ctx_rename"))
             onTriggered: { if (pane.menuIdx >= 0) pane.renameFile(pane.menuIdx, pane.files[pane.menuIdx].path) }
@@ -59,6 +64,7 @@ ColumnLayout {
         Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: pane.files
         visible: pane.files.length > 0
         boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
         delegate: Rectangle {
             id: row
             width: ListView.view.width; height: 34
@@ -68,7 +74,7 @@ ColumnLayout {
                 id: rowMa
                 anchors.fill: parent; hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
-                onDoubleClicked: pane.renameFile(index, modelData.path)
+                onDoubleClicked: pane.openFile(index)
                 onClicked: function(mouse) {
                     if (mouse.button === Qt.RightButton) { pane.menuIdx = index; fileMenu.popup() }
                 }

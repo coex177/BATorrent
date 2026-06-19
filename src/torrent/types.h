@@ -27,6 +27,7 @@ struct TorrentInfo {
     float ratio;
     QString category;
     QStringList tags;
+    qint64 addedAt = 0;   // epoch seconds the torrent was added (0 = unknown)
 };
 
 struct PeerInfo {

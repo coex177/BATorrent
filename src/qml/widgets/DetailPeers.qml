@@ -6,6 +6,7 @@
 // rows: { ip, port, client, downSpeed, upSpeed, progress }
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic
 import "../theme"
 
 ColumnLayout {
@@ -53,6 +54,7 @@ ColumnLayout {
         Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: pane.peers
         visible: pane.peers.length > 0
         boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
         delegate: Rectangle {
             width: ListView.view.width; height: 32; color: "transparent"
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hairSoft }

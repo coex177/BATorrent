@@ -5,6 +5,7 @@
 // Pieces pane for the detail panel. Data: session.selectedPieces (array of bool)
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic
 import "../theme"
 
 ColumnLayout {
@@ -39,6 +40,7 @@ ColumnLayout {
         clip: true
         contentHeight: pieceGrid.height
         boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
 
         Grid {
             id: pieceGrid

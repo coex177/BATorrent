@@ -1,5 +1,23 @@
 # Changelog
 
+## v4.1.0b — fork build (coex177)
+
+Second alpha of the [coex177 fork](https://github.com/coex177/BATorrent), building on `v4.1.0a`. A round of list/table quality-of-life work plus a couple of interaction fixes. Windows-only alpha, based on the original BATorrent v4.1.0.
+
+### Added
+- **"Added on" column** in List and Compact view showing when each torrent was added. Existing torrents keep their real original date (read from libtorrent resume data), and the column is sortable like the rest.
+- **Compact view** — a third view mode alongside Grid and List that drops the cover-art thumbnail and uses tighter rows for a denser list.
+- **Vertical scrollbars** in the torrent list, the grid, and the detail tabs (Peers, Files, Trackers, Pieces). They auto-hide when there's nothing to scroll.
+
+### Changed
+- **The view type (Grid / List / Compact) is now remembered** across restarts instead of always reopening in Grid.
+- **The column-title row is pinned**: it stays in place while you scroll the list instead of scrolling away with the rows.
+- **Double-clicking a file** in a torrent's Files tab now opens it with your default app instead of starting a rename. Rename moved to the right-click menu, which also gained an explicit "Open" entry.
+
+### Fixed
+- **Sorting by clicking a column title now works.** The selection overlay was intercepting header clicks, so nothing happened; click a title to sort, click again to flip ascending/descending.
+- **The Delete key now opens the Remove dialog** for the selected torrent(s). It had a duplicate key binding that cancelled itself out. Works like F2 does for rename, and still deletes text normally while you're typing in a field.
+
 ## v4.2.0 — "Polish"
 
 The release where BATorrent starts *feeling* like the app it already was. No new pages, no new tabs — hundreds of small decisions instead: every dialog answers Esc, every control shows focus, every state explains itself. Plus one big power feature.

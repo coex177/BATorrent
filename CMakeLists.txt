@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(BATorrent VERSION 4.1.0)
 # Suffix appended to the displayed/reported version (CMake's project VERSION must
 # stay numeric). "a" = alpha; set to "" for a final release.
-set(BAT_VERSION_SUFFIX "a")
+set(BAT_VERSION_SUFFIX "b")
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Svg Multimedia Quick QuickWidgets QuickControls2)
 find_package(LibtorrentRasterbar REQUIRED)
 # Optional: QtKeychain stores credentials in the platform keyring (DPAPI on

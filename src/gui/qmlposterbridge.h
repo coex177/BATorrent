@@ -50,7 +50,8 @@ public:
         NumPeersRole,
         DownRateRole,
         UpRateRole,
-        SizeBytesRole
+        SizeBytesRole,
+        AddedAtRole
     };
 
     explicit QmlPosterModel(SessionManager *session, MetadataResolver *resolver,
@@ -270,6 +271,9 @@ public:
     Q_INVOKABLE void setSelectedFilePriority(int fileIndex, int priority);
     Q_INVOKABLE void copySelectedName();
     Q_INVOKABLE void openSelectedFile();
+    // Open a single file of the selected torrent (by file index) with the OS
+    // default application. Used by the Files detail tab's double-click.
+    Q_INVOKABLE void openFileAt(int fileIndex);
     Q_INVOKABLE void copySelectedContentPath();
     Q_INVOKABLE QVariantList torrentPalette() const;
     Q_INVOKABLE QVariantList loadSubtitleFile(const QString &path);

@@ -16,6 +16,7 @@
 #include <libtorrent/torrent_status.hpp>
 #include <QMap>
 #include <QSet>
+#include <QHash>
 #include <map>
 #include <memory>
 #include <vector>
@@ -624,6 +625,10 @@ private:
     // User-chosen display name per torrent (hash -> name); overrides the
     // immutable metadata name in the list. See renameTorrent().
     QMap<QString, QString> m_customNames;
+    // When each torrent was added (hash -> epoch seconds). Seeded from libtorrent
+    // resume data on load so existing torrents keep their real date; set to "now"
+    // on a fresh add. Not separately persisted — resume data is the source.
+    QHash<QString, qint64> m_addedTimes;
 
     // VPN / Interface binding
     QString m_outgoingInterface;
