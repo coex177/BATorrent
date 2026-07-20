@@ -293,7 +293,7 @@ Item {
         z: 2
 
         property int hoveredRow: -1
-        readonly property int rowH: 56
+        readonly property int rowH: win.listRowH
         property bool dragging: false
         property real startX: 0
         property real startY: 0

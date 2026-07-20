@@ -335,6 +335,8 @@ SessionManager::SessionManager(QObject *parent)
                 settings.value("autoMovePath").toString());
     m_preallocate = settings.value("preallocate", false).toBool();
     m_autoRecheck = settings.value("autoRecheck", false).toBool();
+    m_deleteTorrentOnAdd = settings.value("deleteTorrentOnAdd", false).toBool();
+    m_torrentMoveDir = settings.value("torrentMoveDir").toString();
 
     // Crash-loop guard. The only place a bad/corrupt resume file can hard-crash
     // the process is the synchronous parse inside loadResumeData(). So we raise
@@ -472,6 +474,7 @@ void SessionManager::addTorrent(const QString &filePath, const QString &savePath
         stageResumeSave(h);   // persist now — an idle 0%/no-peer torrent never
 
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
+        disposeOfSourceTorrent(filePath);
         scanTorrentForThreats(h, QString::fromStdString(h.status().name));   // .torrent: metadata is ready now
         maybeAutoExcludeDefender(QString::fromStdString(atp.save_path));
     } catch (const std::exception &e) {
@@ -523,6 +526,7 @@ void SessionManager::addTorrentWithPriorities(const QString &filePath,
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist immediately (see addTorrent)
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
+        disposeOfSourceTorrent(filePath);
         scanTorrentForThreats(h, QString::fromStdString(h.status().name));   // .torrent: metadata is ready now
         maybeAutoExcludeDefender(QString::fromStdString(atp.save_path));
     } catch (const std::exception &e) {
@@ -1648,6 +1652,8 @@ bool SessionManager::applySetting(const QString &key, const QVariant &v)
     else if (key == "tempPath")            setTempPath(v.toString());
     else if (key == "preallocate")         setPreallocate(v.toBool());
     else if (key == "autoRecheck")         setAutoRecheck(v.toBool());
+    else if (key == "deleteTorrentOnAdd")  setDeleteTorrentOnAdd(v.toBool());
+    else if (key == "torrentMoveDir")      setTorrentMoveDir(v.toString());
     else if (key == "contentLayout")       setContentLayout(v.toInt());
     else if (key == "torrentExportDir")    setTorrentExportDir(v.toString());
     else if (key == "extractPasswords") {

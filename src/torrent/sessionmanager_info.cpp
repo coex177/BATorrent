@@ -244,6 +244,44 @@ bool SessionManager::torrentInFolder(int torrentIndex) const
     return first.find_first_of("/\\") != std::string::npos;
 }
 
+void SessionManager::setDeleteTorrentOnAdd(bool enabled)
+{
+    m_deleteTorrentOnAdd = enabled;
+    QSettings("BATorrent", "BATorrent").setValue("deleteTorrentOnAdd", enabled);
+}
+
+bool SessionManager::deleteTorrentOnAdd() const { return m_deleteTorrentOnAdd; }
+
+void SessionManager::setTorrentMoveDir(const QString &path)
+{
+    m_torrentMoveDir = path;
+    QSettings("BATorrent", "BATorrent").setValue("torrentMoveDir", path);
+}
+
+QString SessionManager::torrentMoveDir() const { return m_torrentMoveDir; }
+
+void SessionManager::disposeOfSourceTorrent(const QString &filePath)
+{
+    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return;
+
+    // A configured move folder wins (it's an explicit "keep them here" choice,
+    // so we never silently delete a file the user asked to organise).
+    if (!m_torrentMoveDir.isEmpty()) {
+        QDir dir(m_torrentMoveDir);
+        if (dir.exists() || dir.mkpath(".")) {
+            const QString dest = dir.filePath(QFileInfo(filePath).fileName());
+            QFile::remove(dest);                      // overwrite a stale same-named file
+            if (QFile::rename(filePath, dest)) return;
+        }
+        // move failed (bad path / cross-device) — fall through to delete-if-enabled
+    }
+
+    if (m_deleteTorrentOnAdd) {
+        // Recycle Bin first (recoverable); permanent delete if the volume has no trash.
+        if (!QFile::moveToTrash(filePath)) QFile::remove(filePath);
+    }
+}
+
 void SessionManager::moveStorage(int torrentIndex, const QString &newSavePath)
 {
     if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))

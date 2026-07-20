@@ -195,6 +195,8 @@ QVariant QmlSettingsBridge::get(const QString &key) const
     if (key == "tempPath")            return s->tempPath();
     if (key == "preallocate")         return s->preallocate();
     if (key == "autoRecheck")         return s->autoRecheck();
+    if (key == "deleteTorrentOnAdd")  return s->deleteTorrentOnAdd();
+    if (key == "torrentMoveDir")      return s->torrentMoveDir();
     if (key == "contentLayout")       return s->contentLayout();
     if (key == "torrentExportDir")    return s->torrentExportDir();
     if (key == "extractPasswords")    return s->extractPasswords().join(QStringLiteral("; "));
@@ -260,7 +262,7 @@ QVariant QmlSettingsBridge::get(const QString &key) const
         QStringLiteral("autoTrackers"), QStringLiteral("addPublicTrackers"),
         QStringLiteral("assocTorrent"), QStringLiteral("assocMagnet"), QStringLiteral("assocBittorrent"),
         QStringLiteral("detailBottom"), QStringLiteral("showDownloadChip"),
-        QStringLiteral("scrollbarsAlwaysOn"),
+        QStringLiteral("scrollbarsAlwaysOn"), QStringLiteral("denseRows"),
         QStringLiteral("torrentSearchEnabled"),
         QStringLiteral("useDefaultPath"), QStringLiteral("verboseLogging"), QStringLiteral("useTor"),
         QStringLiteral("plexEnabled"), QStringLiteral("jellyfinEnabled"), QStringLiteral("tourSeen"),

@@ -10,7 +10,7 @@ Rectangle {
     property var win
     id: lrow
     width: ListView.view.width
-    height: 56
+    height: win.listRowH
 
     required property int index
     required property string torrentName

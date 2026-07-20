@@ -23,9 +23,11 @@ Re-applying fork features on top of the upstream v4.7.0 merge.
 - [x] Sort column/direction + detail tab persistence
 - [x] Pinned column header (also fixes header sort clicks being eaten
       by the selection overlay)
-- [ ] Compact view (third mode alongside Grid/Classic, no cover art)
+- [x] Compact view — delivered as a **dense rows** toggle. Upstream's classic
+      row is already cover-less, so only the row height (56 -> 40) was missing;
+      a third toggle segment would have been near-identical to Classic.
 - [x] Rename dialog: separate file-extension field
-- [ ] Settings: `torrentMoveDir` ("move added .torrent files") and
+- [x] Settings: `torrentMoveDir` ("move added .torrent files") and
       `deleteTorrentOnAdd`
 
 ## Dropped (superseded upstream)

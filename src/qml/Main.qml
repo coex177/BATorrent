@@ -124,6 +124,7 @@ Window {
             win.detailBottom = settings.get("detailBottom") === true
             win.showDownloadChip = settings.get("showDownloadChip") !== false
             win.scrollbarsAlwaysOn = settings.get("scrollbarsAlwaysOn") === true
+            win.denseRows = settings.get("denseRows") === true
             var sc = settings.get("sortColumn")
             if (sc) {
                 win.sortColumn = sc
@@ -230,6 +231,10 @@ Window {
     // The Peers tab pulls every peer from libtorrent — only keep it live while open.
     readonly property bool peersTabOpen: win.hasSel && win.detailTab === 1
     onPeersTabOpenChanged: if (typeof session !== "undefined") session.setDetailPeersActive(peersTabOpen)
+    // Denser classic rows (upstream's classic row is already cover-less, so
+    // this is the row-height half of the fork's old "compact" view).
+    property bool denseRows: false
+    readonly property int listRowH: denseRows ? 40 : 56
     // Scrollbar visibility: false = AsNeeded (auto-hide), true = AlwaysOn.
     property bool scrollbarsAlwaysOn: false
     readonly property int scrollbarPolicy: scrollbarsAlwaysOn ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
