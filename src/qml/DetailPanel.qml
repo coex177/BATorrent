@@ -125,6 +125,7 @@ Rectangle {
                 onRenameFile: function(idx, current) {
                     detailPanel.renameFileRequested(idx, current)
                 }
+                onOpenFile: function(idx) { if (typeof session !== "undefined") session.openFileAt(idx) }
             }
             DetailTrackers { trackers: (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 3) ? session.selectedTrackers : [] }
             DetailPieces   { pieces:   (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 4) ? session.selectedPieces   : ({}) }

@@ -123,6 +123,14 @@ Window {
             win.layoutClassic = (lc === true || lc === 1 || lc === "1" || lc === "true")
             win.detailBottom = settings.get("detailBottom") === true
             win.showDownloadChip = settings.get("showDownloadChip") !== false
+            var sc = settings.get("sortColumn")
+            if (sc) {
+                win.sortColumn = sc
+                win.sortAsc = settings.get("sortDir") !== "desc"
+                if (typeof torrentFilter !== "undefined") torrentFilter.setSortColumn(sc, win.sortAsc)
+            }
+            var dt = Number(settings.get("detailTab"))
+            if (dt >= 0 && dt <= 4) win.detailTab = dt
         }
         if (typeof settings === "undefined") {
             showSplash = true
@@ -205,7 +213,8 @@ Window {
         return Qt.rect(p.x, p.y, item.width, item.height)
     }
     readonly property var presetCats: ["Apps", "Games", "Movies", "Series"]
-    property int detailTab: 0   // 0 Geral · 1 Peers · 2 Arquivos · 3 Trackers · 4 Pedaços
+    property int detailTab: 0
+    onDetailTabChanged: if (typeof settings !== "undefined") settings.set("detailTab", detailTab)   // 0 Geral · 1 Peers · 2 Arquivos · 3 Trackers · 4 Pedaços
     property bool detailsCollapsed: typeof settings !== "undefined" && settings.get("detailsCollapsed") === true
     function toggleDetailsCollapsed() {
         detailsCollapsed = !detailsCollapsed
@@ -222,6 +231,9 @@ Window {
     onPeersTabOpenChanged: if (typeof session !== "undefined") session.setDetailPeersActive(peersTabOpen)
     property string sortColumn: ""
     property bool sortAsc: true
+    onSortColumnChanged: if (typeof settings !== "undefined") settings.set("sortColumn", sortColumn)
+    // stored as a string: QSettings round-trips bool as int on Windows
+    onSortAscChanged: if (typeof settings !== "undefined") settings.set("sortDir", sortAsc ? "asc" : "desc")
 
     // live model from C++ (QmlTorrentFilterProxy → QmlPosterModel). Roles:
     // torrentName, metaTitle, stateKey, progress(0..1), posterPath, stateString,
@@ -694,7 +706,7 @@ Window {
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_pause_all")); onTriggered: if (typeof session !== "undefined") session.pauseAll() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_resume_all")); onTriggered: if (typeof session !== "undefined") session.resumeAll() }
             Platform.MenuSeparator {}
-            Platform.MenuItem { text: (i18n.language, i18n.t("menu_remove")); shortcut: StandardKey.Delete; enabled: win.hasSel; onTriggered: removeDlg.open() }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_remove")); enabled: win.hasSel; onTriggered: removeDlg.open() }
         }
         Platform.Menu {
             title: (i18n.language, i18n.t("menu_settings_title"))
@@ -1599,6 +1611,9 @@ Window {
         onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"),
                                           session.selectedName, "", function(t){ session.renameSelected(t) })
     }
+    // Delete -> Remove dialog. A focused editable field overrides this, so it
+    // still deletes characters while typing. Mirrors F2 -> Rename.
+    Shortcut { sequence: StandardKey.Delete; enabled: win.hasSel; onActivated: removeDlg.open() }
     Shortcut { sequence: "Ctrl+1"; onActivated: win.setFilter("all") }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.setFilter("downloading") }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.setFilter("seeding") }

@@ -9,6 +9,7 @@
 import QtQuick
 import QtQuick.Effects
 import QtQuick.Layouts
+import QtQuick.Controls.Basic
 import "theme"
 import "widgets"
 
@@ -186,6 +187,7 @@ Item {
         interactive: true
         z: 1
 
+        ScrollBar.vertical: ScrollBar { id: gridVBar; policy: ScrollBar.AsNeeded; implicitWidth: 12 }
         delegate: PosterTile { win: libraryView.win }
     }
 
@@ -195,6 +197,8 @@ Item {
     // MouseArea inside the Flickable never received these.
     MouseArea {
         anchors.fill: grid
+        // keep the scrollbar's lane uncovered so the bar stays draggable
+        anchors.rightMargin: grid.contentHeight > grid.height ? gridVBar.implicitWidth : 0
         visible: win.gridView && !parent.empty
         enabled: visible
         z: 2
@@ -252,6 +256,7 @@ Item {
                 HCol { label: (i18n.language, i18n.t("col_state")); col: "state"; w: 104 }
                 HCol { label: (i18n.language, i18n.t("col_seeds")); col: "seeds"; w: 44; alignRight: true }
                 HCol { label: (i18n.language, i18n.t("col_peers")); col: "peers"; w: 44; alignRight: true }
+                HCol { label: (i18n.language, i18n.t("col_added")); col: "added"; w: 96 }
                 HCol { label: (i18n.language, i18n.t("col_down")); col: "down"; w: 74; alignRight: true }
                 HCol { label: (i18n.language, i18n.t("col_up")); col: "up"; w: 74; alignRight: true }
                 HCol { label: (i18n.language, i18n.t("col_ratio")); col: "ratio"; w: 50; alignRight: true }
@@ -267,6 +272,7 @@ Item {
     MouseArea {
         id: listArea
         anchors.fill: list
+        anchors.rightMargin: list.contentHeight > list.height ? listVBar.implicitWidth : 0
         visible: !win.gridView && !parent.empty
         enabled: visible
         hoverEnabled: true

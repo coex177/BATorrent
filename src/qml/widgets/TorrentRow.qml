@@ -26,6 +26,7 @@ Rectangle {
     required property int upRate
     required property string category
     required property int numPeers
+    required property var addedAt
     required property int numSeeds
     required property real ratio
     required property real availability
@@ -137,6 +138,15 @@ Rectangle {
             font.pixelSize: 12
             font.family: Theme.fontSans
             font.features: Theme.tnum
+        }
+        Text {
+            text: Number(lrow.addedAt) > 0
+                  ? new Date(Number(lrow.addedAt)).toLocaleDateString(Qt.locale(), Locale.ShortFormat) : "—"
+            Layout.preferredWidth: 96
+            color: Theme.t3
+            font.pixelSize: 12
+            font.family: Theme.fontSans
+            elide: Text.ElideRight
         }
         // speeds stay neutral — the state column is the one colored cell per
         // row; a red/amber column per direction read as 16 rows of alarm

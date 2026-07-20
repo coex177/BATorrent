@@ -6,6 +6,7 @@
 // rows: { ip, port, client, downSpeed, upSpeed, progress }
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic
 import "../theme"
 
 ColumnLayout {
@@ -66,6 +67,7 @@ ColumnLayout {
         Layout.fillWidth: true; Layout.fillHeight: true; Layout.topMargin: 8; clip: true; model: pane.peers
         visible: pane.peers.length > 0
         boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
         delegate: pane.compact ? compactRow : wideRow
     }
 
