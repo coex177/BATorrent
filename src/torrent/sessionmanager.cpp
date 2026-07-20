@@ -1096,7 +1096,12 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
             // Re-root every file under the new top-level folder. Paths are read
             // from the live snapshot (which already reflects prior renames and
             // any ".!bt" in-progress suffix), so those are preserved.
-            const std::string oldRoot = fs.name();
+            // Take the root from a live path, not fs.name(): the metadata name
+            // never follows rename_file(), so after one rename it goes stale and
+            // every later rename silently matches nothing.
+            const std::size_t rootEnd = first.find_first_of("/\\");
+            const std::string oldRoot =
+                rootEnd == std::string::npos ? std::string() : first.substr(0, rootEnd);
             const std::string newRoot = trimmed.toStdString();
             if (!oldRoot.empty() && newRoot != oldRoot) {
                 for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
