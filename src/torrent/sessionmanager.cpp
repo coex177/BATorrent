@@ -22,6 +22,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QFile>
+#include <QSaveFile>
 #include <QUrl>
 #include <QSettings>
 #include <QNetworkInterface>
@@ -1117,7 +1118,9 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
     const QString hash = torrentHash(torrentIndex);
     if (!hash.isEmpty()) {
         m_customNames[hash] = trimmed;
-        QSettings("BATorrent", "BATorrent").setValue("torrentNames/" + hash, trimmed);
+        QSettings s("BATorrent", "BATorrent");
+        s.setValue("torrentNames/" + hash, trimmed);
+        s.sync();   // QSettings buffers; an unclean exit would drop the rename
     }
     emit torrentsUpdated();
 }
@@ -2123,11 +2126,16 @@ bool SessionManager::persistResumeAlert(const lt::save_resume_data_alert *rd)
     if (m_removedHashes.contains(hash))
         return false;
     QString filePath = dir.filePath(hash + ".resume");
-    QFile file(filePath);
+    // QSaveFile: temp + atomic rename, so a crash mid-write can't truncate the
+    // existing .resume (losing it loses the .!bt mapping and forces a redownload).
+    QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly))
         return false;
-    file.write(buf.data(), static_cast<qint64>(buf.size()));
-    return true;
+    if (file.write(buf.data(), static_cast<qint64>(buf.size())) != qint64(buf.size())) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 
 void SessionManager::loadResumeData()
@@ -2287,6 +2295,15 @@ void SessionManager::updateStats()
         if (++statsTick >= 5 && m_statsHistory) {
             statsTick = 0;
             m_statsHistory->recordTransfer(globalDownloaded(), globalUploaded());
+        }
+    }
+    // The per-piece save only fires while pieces complete, so seeding/stalled
+    // torrents would keep pre-crash state. ponytail: 5 min ceiling on loss.
+    {
+        static int resumeTick = 0;
+        if (++resumeTick >= 300) {
+            resumeTick = 0;
+            saveResumeData();
         }
     }
     checkSeedRatios();
