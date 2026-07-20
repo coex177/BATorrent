@@ -75,6 +75,14 @@ Window {
             if (sh >= win.minimumHeight && sh <= Screen.desktopAvailableHeight) win.height = sh
             var vm = settings.get("viewMode")
             if (vm === "grid" || vm === "list" || vm === "compact") win.viewMode = vm
+            var sc = settings.get("sortColumn")
+            if (sc) {
+                win.sortColumn = sc
+                win.sortAsc = settings.get("sortDir") !== "desc"
+                if (typeof torrentFilter !== "undefined") torrentFilter.setSortColumn(sc, win.sortAsc)
+            }
+            var dt = Number(settings.get("detailTab"))
+            if (dt >= 0 && dt <= 4) win.detailTab = dt
         }
         showSplash = (typeof settings === "undefined") || settings.get("showSplash") !== false
         // start hidden in the tray if the user asked for it (and a tray exists)
@@ -137,11 +145,15 @@ Window {
     }
     readonly property var presetCats: ["Apps", "Games", "Movies", "Series"]
     property int detailTab: 0   // 0 Geral · 1 Peers · 2 Arquivos · 3 Trackers · 4 Pedaços
+    onDetailTabChanged: if (typeof settings !== "undefined") settings.set("detailTab", detailTab)
     // The Peers tab pulls every peer from libtorrent — only keep it live while open.
     readonly property bool peersTabOpen: win.hasSel && win.detailTab === 1
     onPeersTabOpenChanged: if (typeof session !== "undefined") session.setDetailPeersActive(peersTabOpen)
     property string sortColumn: ""
     property bool sortAsc: true
+    onSortColumnChanged: if (typeof settings !== "undefined") settings.set("sortColumn", sortColumn)
+    // stored as a string: QSettings round-trips bool as int on Windows
+    onSortAscChanged: if (typeof settings !== "undefined") settings.set("sortDir", sortAsc ? "asc" : "desc")
 
     // live model from C++ (QmlTorrentFilterProxy → QmlPosterModel). Roles:
     // torrentName, metaTitle, stateKey, progress(0..1), posterPath, stateString,
