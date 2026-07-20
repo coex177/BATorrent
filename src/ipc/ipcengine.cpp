@@ -250,6 +250,8 @@ void IpcEngine::addMagnet(const QString &uri, const QString &sp, const QString &
 { QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << uri << sp << hint << qint32(ct); call(QStringLiteral("addMagnet"), d); }
 void IpcEngine::renameFile(int ti, int fi, const QString &p)
 { QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << qint32(ti) << qint32(fi) << p; call(QStringLiteral("renameFile"), d); }
+void IpcEngine::renameTorrent(int ti, const QString &n)
+{ QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << qint32(ti) << n; call(QStringLiteral("renameTorrent"), d); }
 void IpcEngine::extractTorrent(int i, const QString &pw)
 { QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << qint32(i) << pw; call(QStringLiteral("extractTorrent"), d); }
 void IpcEngine::setTorrentUploadLimit(int i, int k)

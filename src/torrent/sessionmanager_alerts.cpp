@@ -49,6 +49,7 @@ void SessionManager::processAlerts()
         if (auto *tc = lt::alert_cast<lt::torrent_checked_alert>(a)) onTorrentChecked(tc);
         if (auto *mr = lt::alert_cast<lt::metadata_received_alert>(a)) onMetadataReceived(mr);
         if (auto *fc = lt::alert_cast<lt::file_completed_alert>(a)) onFileCompleted(fc);
+        if (auto *fn = lt::alert_cast<lt::file_renamed_alert>(a)) onFileRenamed(fn);
 #ifdef BAT_LIBTORRENT_FORK
         if (auto *xi = lt::alert_cast<lt::external_ip_alert>(a)) onExternalIp(xi);
 #endif
@@ -403,6 +404,32 @@ void SessionManager::onFileCompleted(const lt::file_completed_alert *fc)
             fc->handle.rename_file(fc->index, stripped);
         }
     }
+}
+
+// Depth-first delete of a directory tree that holds no files. Returns false
+// while anything is still in there, so an unfinished rename is retried on a
+// later alert instead of leaving a half-empty tree behind.
+static bool pruneEmptyDir(const QString &root)
+{
+    QDir dir(root);
+    if (!dir.exists()) return true;
+    const auto subdirs = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot
+                                           | QDir::Hidden | QDir::System);
+    for (const auto &sd : subdirs)
+        pruneEmptyDir(sd.absoluteFilePath());
+    if (!dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot
+                           | QDir::Hidden | QDir::System).isEmpty())
+        return false;
+    return QDir().rmdir(root);
+}
+
+void SessionManager::onFileRenamed(const lt::file_renamed_alert *fr)
+{
+    // A folder rename moves files one at a time; the old tree is only empty
+    // once the last one lands, so retry the prune on every alert until it goes.
+    auto it = m_renameOldRoots.find(fr->handle);
+    if (it != m_renameOldRoots.end() && pruneEmptyDir(it->second))
+        m_renameOldRoots.erase(it);
 }
 
 #ifdef BAT_LIBTORRENT_FORK

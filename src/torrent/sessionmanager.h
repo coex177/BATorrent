@@ -108,10 +108,8 @@ public:
     // Rename one file in the torrent (libtorrent's rename_file). The path
     // is interpreted relative to the torrent's save_path.
     void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath);
-    // Rename the whole torrent: the on-disk file (single-file) or top-level
-    // folder (multi-file), plus the name shown in the list. The display name
-    // is stored as a per-torrent override because libtorrent's metadata name
-    // is immutable.
+    // Rename the torrent itself: the on-disk file (single-file layout) or the
+    // top-level folder (multi-file), plus the name shown in the UI.
     void renameTorrent(int torrentIndex, const QString &newName);
     // True when the content sits under a top-level folder (multi-file layout).
     bool torrentInFolder(int torrentIndex) const;
@@ -471,6 +469,7 @@ private:
     void onTorrentChecked(const lt::torrent_checked_alert *tc);
     void onMetadataReceived(const lt::metadata_received_alert *mr);
     void onFileCompleted(const lt::file_completed_alert *fc);
+    void onFileRenamed(const lt::file_renamed_alert *fr);
 #ifdef BAT_LIBTORRENT_FORK
     void onExternalIp(const lt::external_ip_alert *ea);
     // Installs the same-country peer-ranking classifier once both our external
@@ -669,6 +668,8 @@ private:
     // resume data on load so existing torrents keep their real date; set to "now"
     // on a fresh add. Not separately persisted — resume data is the source.
     QHash<QString, qint64> m_addedTimes;
+    // Folder left behind by a rename, pruned once its files have all moved.
+    std::map<lt::torrent_handle, QString> m_renameOldRoots;
 
     // VPN / Interface binding
     QString m_outgoingInterface;

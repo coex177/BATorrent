@@ -209,6 +209,7 @@ void HttpMergeEngine::addTorrent(const QString &fp, const QString &sp) { m_inner
 std::vector<TrackerInfo> HttpMergeEngine::trackersAt(int i) const { return isHttp(i) ? std::vector<TrackerInfo>{} : m_inner->trackersAt(i); }
 int HttpMergeEngine::torrentDownloadLimit(int i) const { return isHttp(i) ? 0 : m_inner->torrentDownloadLimit(i); }
 void HttpMergeEngine::renameFile(int t, int f, const QString &n) { if (!isHttp(t)) m_inner->renameFile(t, f, n); }
+void HttpMergeEngine::renameTorrent(int t, const QString &n) { if (!isHttp(t)) m_inner->renameTorrent(t, n); }
 void HttpMergeEngine::extractTorrent(int i, const QString &p) { if (!isHttp(i)) m_inner->extractTorrent(i, p); }
 void HttpMergeEngine::unmarkCompleted(int i) { if (!isHttp(i)) m_inner->unmarkCompleted(i); }
 int HttpMergeEngine::torrentUploadLimit(int i) const { return isHttp(i) ? 0 : m_inner->torrentUploadLimit(i); }

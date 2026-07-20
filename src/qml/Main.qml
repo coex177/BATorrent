@@ -1594,6 +1594,11 @@ Window {
     Shortcut { sequence: "Down";  enabled: !cmdPalette.opened; onActivated: win.moveSel(win.gridView ?  win.gridCols() :  1) }
     Shortcut { sequence: "Left";  enabled: win.gridView && !cmdPalette.opened; onActivated: win.moveSel(-1) }
     Shortcut { sequence: "Right"; enabled: win.gridView && !cmdPalette.opened; onActivated: win.moveSel(1) }
+    Shortcut {
+        sequence: "F2"; enabled: win.hasSel
+        onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"),
+                                          session.selectedName, "", function(t){ session.renameSelected(t) })
+    }
     Shortcut { sequence: "Ctrl+1"; onActivated: win.setFilter("all") }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.setFilter("downloading") }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.setFilter("seeding") }

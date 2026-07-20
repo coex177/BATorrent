@@ -52,6 +52,7 @@ public:
     int torrentDownloadLimit(int index) const override;
     QString streamFilePath(int torrentIndex, int fileIndex) const override;
     void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath) override;
+    void renameTorrent(int torrentIndex, const QString &newName) override;
     void pauseTorrent(int index) override;
     qint64 globalUploaded() const override;
     float globalRatio() const override;

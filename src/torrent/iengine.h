@@ -45,6 +45,7 @@ public:
     virtual int torrentDownloadLimit(int index) const = 0;
     virtual QString streamFilePath(int torrentIndex, int fileIndex) const = 0;
     virtual void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath) = 0;
+    virtual void renameTorrent(int torrentIndex, const QString &newName) = 0;
     virtual void pauseTorrent(int index) = 0;
     virtual qint64 globalUploaded() const = 0;
     virtual float globalRatio() const = 0;

@@ -263,6 +263,14 @@ SessionManager::SessionManager(QObject *parent)
     }
     settings.endGroup();
 
+    settings.beginGroup("torrentNames");
+    for (const auto &key : settings.childKeys()) {
+        const QString name = settings.value(key).toString();
+        if (!name.isEmpty())
+            m_customNames[key] = name;
+    }
+    settings.endGroup();
+
     // Load per-torrent stop-after overrides
     settings.beginGroup("torrentStopAfter");
     for (const auto &key : settings.childKeys())
@@ -678,6 +686,8 @@ void SessionManager::removeTorrent(int index, bool deleteFiles, bool permanent)
         }
         if (m_torrentTags.remove(hash))
             QSettings("BATorrent", "BATorrent").remove("torrentTags/" + hash);
+        if (m_customNames.remove(hash))
+            QSettings("BATorrent", "BATorrent").remove("torrentNames/" + hash);
         m_removedHashes.insert(hash);
         if (m_removedHashes.size() > 500) m_removedHashes.clear();
 
@@ -692,6 +702,7 @@ void SessionManager::removeTorrent(int index, bool deleteFiles, bool permanent)
         m_pendingResumeStripCheck.erase(h);
         m_magnetAddedAt.erase(h);
         m_magnetHashes.erase(h);
+        m_renameOldRoots.erase(h);
 
         // "delete files" sends the data to the OS trash instead of erasing it —
         // recoverable removal is a safety net users expect from a desktop app.
@@ -903,6 +914,8 @@ TorrentInfo SessionManager::torrentAt(int index) const
     if (!hash.isEmpty()) {
         info.category = m_categories.value(hash);
         info.tags = m_torrentTags.value(hash);
+        const QString custom = m_customNames.value(hash);
+        if (!custom.isEmpty()) info.name = custom;
     }
 
     return info;

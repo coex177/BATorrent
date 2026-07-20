@@ -197,6 +197,8 @@ QByteArray EngineHost::dispatch(const QString &method, const QByteArray &args)
         m_session->addMagnet(uri, sp, hint, ct);
     } else if (method == QLatin1String("renameFile")) {
         qint32 ti, fi; QString p; in >> ti >> fi >> p; m_session->renameFile(ti, fi, p);
+    } else if (method == QLatin1String("renameTorrent")) {
+        qint32 ti; QString n; in >> ti >> n; m_session->renameTorrent(ti, n);
     } else if (method == QLatin1String("extractTorrent")) {
         qint32 i; QString pw; in >> i >> pw; m_session->extractTorrent(i, pw);
     } else if (method == QLatin1String("unmarkCompleted")) {

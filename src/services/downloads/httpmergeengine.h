@@ -57,6 +57,7 @@ public:
     std::vector<TrackerInfo> trackersAt(int index) const override;
     int torrentDownloadLimit(int index) const override;
     void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath) override;
+    void renameTorrent(int torrentIndex, const QString &newName) override;
     void extractTorrent(int index, const QString &password) override;
     void unmarkCompleted(int index) override;
     int torrentUploadLimit(int index) const override;
