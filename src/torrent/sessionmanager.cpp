@@ -1130,6 +1130,17 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
     emit torrentsUpdated();
 }
 
+bool SessionManager::torrentInFolder(int torrentIndex) const
+{
+    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
+        return false;
+    if (!m_torrents[torrentIndex].is_valid()) return false;
+    auto ti = m_torrents[torrentIndex].torrent_file();
+    if (!ti || ti->num_files() == 0) return false;
+    const std::string first = ti->files().file_path(lt::file_index_t(0));
+    return first.find_first_of("/\\") != std::string::npos;
+}
+
 void SessionManager::moveStorage(int torrentIndex, const QString &newSavePath)
 {
     if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))

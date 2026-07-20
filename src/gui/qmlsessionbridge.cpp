@@ -512,6 +512,11 @@ void QmlSessionBridge::renameSelected(const QString &name)
     emit queueRefreshNeeded();   // NameRole isn't a volatile role — force a full re-read
 }
 
+bool QmlSessionBridge::selectedIsFolder() const
+{
+    return hasSelection() && m_session->torrentInFolder(m_selectedIndex);
+}
+
 QString QmlSessionBridge::diagnoseSelectedSlow() const
 {
     if (!hasSelection()) return QString();

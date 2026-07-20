@@ -352,7 +352,7 @@ Window {
         CtxItem { text: (i18n.language, i18n.t("ctx_copy_path")); onTriggered: session.copySelectedContentPath() }
         CtxItem { text: (i18n.language, i18n.t("ctx_play")); onTriggered: session.playSelected() }
         CtxItem { text: (i18n.language, i18n.t("ctx_stream")); onTriggered: session.streamSelected() }
-        CtxItem { text: (i18n.language, i18n.t("ctx_rename")); onTriggered: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }) }
+        CtxItem { text: (i18n.language, i18n.t("ctx_rename")); onTriggered: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }, !session.selectedIsFolder()) }
         Sep {}
 
         Menu {
@@ -2469,7 +2469,7 @@ Window {
                       files: (win.hasSel && win.detailTab === 2) ? session.selectedFiles : []
                       onRenameFile: function(idx, current) {
                           inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), current, "",
-                              function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) })
+                              function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) }, true)
                       }
                       onOpenFile: function(idx) { if (typeof session !== "undefined") session.openFileAt(idx) }
                   }
@@ -2905,7 +2905,7 @@ Window {
     Shortcut { sequence: "Ctrl+R"; onActivated: if (typeof session !== "undefined") session.forceRecheckSelected() }
     Shortcut {
         sequence: "F2"; enabled: win.hasSel
-        onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) })
+        onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }, !session.selectedIsFolder())
     }
     // Delete → Remove dialog (an editable text field with focus overrides this,
     // so it still deletes characters while typing). Mirrors F2 → Rename.

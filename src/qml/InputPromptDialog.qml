@@ -23,14 +23,29 @@ BatDialog {
     property string promptLabel: ""
     property string promptPlaceholder: ""
     property var onAccept: null
+    // Only set for things that actually have an extension (files, single-file
+    // torrents); folder torrents pass false so the dots in a release name stay
+    // in the name field.
+    property bool splitExt: false
 
-    onAccepted: if (onAccept) onAccept(field.text.trim())
+    onAccepted: if (onAccept) onAccept(dlg.finalText())
 
-    function openWith(t, label, value, placeholder, cb) {
+    function finalText() {
+        var base = field.text.trim()
+        if (!dlg.splitExt) return base
+        var e = extField.text.trim().replace(/^\.+/, "")
+        return e.length > 0 ? base + "." + e : base
+    }
+
+    function openWith(t, label, value, placeholder, cb, splitExtension) {
         dlg.title = t
         dlg.promptLabel = label || ""
         dlg.promptPlaceholder = placeholder || ""
-        field.text = value || ""
+        dlg.splitExt = splitExtension === true
+        var v = value || ""
+        var i = dlg.splitExt ? v.lastIndexOf(".") : -1   // i > 0 keeps ".gitignore" whole
+        field.text = i > 0 ? v.slice(0, i) : v
+        extField.text = i > 0 ? v.slice(i + 1) : ""
         dlg.onAccept = cb
         dlg.open()
         // defer until the dialog is shown so the editor can take focus
@@ -52,11 +67,30 @@ BatDialog {
             wrapMode: Text.WordWrap
         }
 
-        TFld {
-            id: field
+        RowLayout {
             Layout.fillWidth: true
-            placeholder: dlg.promptPlaceholder
-            onAccepted: { dlg.accepted(); dlg.close() }
+            spacing: 6
+
+            TFld {
+                id: field
+                Layout.fillWidth: true
+                placeholder: dlg.promptPlaceholder
+                onAccepted: { dlg.accepted(); dlg.close() }
+            }
+            Text {
+                visible: dlg.splitExt
+                text: "."
+                color: Theme.t3
+                font.pixelSize: 13
+                font.family: Theme.fontSans
+                Layout.alignment: Qt.AlignVCenter
+            }
+            TFld {
+                id: extField
+                visible: dlg.splitExt
+                Layout.preferredWidth: 84
+                onAccepted: { dlg.accepted(); dlg.close() }
+            }
         }
     }
 }

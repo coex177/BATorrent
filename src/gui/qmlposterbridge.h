@@ -233,6 +233,9 @@ public:
     Q_INVOKABLE void setSelectedMaxSeedDays(int days);
     Q_INVOKABLE int  selectedMaxSeedDays() const;
     Q_INVOKABLE void renameSelected(const QString &name);   // rename torrent: on-disk file/folder + display name
+    // Folder-layout torrents have no file extension, so the rename dialog hides
+    // its extension field for them.
+    Q_INVOKABLE bool selectedIsFolder() const;
     Q_INVOKABLE QString diagnoseSelectedSlow() const;       // "why is this slow" report
     Q_INVOKABLE void streamSelected();                      // prioritize video + open EXTERNAL player
     Q_INVOKABLE void playSelected();                        // prioritize video + open the embedded player

@@ -98,6 +98,8 @@ public:
     // is stored as a per-torrent override because libtorrent's metadata name
     // is immutable.
     void renameTorrent(int torrentIndex, const QString &newName);
+    // True when the content sits under a top-level folder (multi-file layout).
+    bool torrentInFolder(int torrentIndex) const;
     // Move the torrent's whole save folder to a new location. Triggers a
     // force_recheck after the move so libtorrent re-verifies pieces.
     void moveStorage(int torrentIndex, const QString &newSavePath);
