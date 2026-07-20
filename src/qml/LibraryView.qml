@@ -187,7 +187,7 @@ Item {
         interactive: true
         z: 1
 
-        ScrollBar.vertical: ScrollBar { id: gridVBar; policy: ScrollBar.AsNeeded; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar { id: gridVBar; policy: win.scrollbarPolicy; implicitWidth: 12 }
         delegate: PosterTile { win: libraryView.win }
     }
 
@@ -222,26 +222,17 @@ Item {
     }
 
     // ----- LIST -----
-    ListView {
-        id: list
-        opacity: (!win.gridView && !parent.empty) ? 1 : 0
-        visible: opacity > 0.01
-        Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-        anchors.fill: parent
-        clip: true
-        model: win.model
-        interactive: true
-        z: 1
-        WheelScroller { flick: list }
-        readonly property bool bulkRemove: typeof session !== "undefined" && session.bulkRemoveInProgress
-        add: Transition { NumberAnimation { properties: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic } }
-        remove: Transition { NumberAnimation { properties: "opacity"; to: 0; duration: list.bulkRemove ? 0 : 120; easing.type: Easing.OutCubic } }
-        displaced: Transition { NumberAnimation { properties: "x,y"; duration: list.bulkRemove ? 0 : 180; easing.type: Easing.OutCubic } }
-
-        header: Rectangle {
-            width: ListView.view.width
-            height: 36
-            color: "transparent"
+    // ----- pinned column header (outside the ListView so it doesn't scroll,
+    // and so the selection overlay below can't eat its sort clicks) -----
+    Rectangle {
+        id: listHeader
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 36
+        z: 2
+        visible: !win.gridView && !parent.empty
+        color: "transparent"
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
 
             RowLayout {
@@ -263,7 +254,28 @@ Item {
                 HCol { label: (i18n.language, i18n.t("col_eta")); col: "eta"; w: 66; alignRight: true }
                 HCol { label: (i18n.language, i18n.t("col_category")); col: "category"; w: 84 }
             }
-        }
+    }
+
+    ListView {
+        id: list
+        opacity: (!win.gridView && !parent.empty) ? 1 : 0
+        visible: opacity > 0.01
+        Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.top: win.gridView ? parent.top : listHeader.bottom
+        clip: true
+        model: win.model
+        interactive: true
+        z: 1
+        WheelScroller { flick: list }
+        ScrollBar.vertical: ScrollBar { id: listVBar; policy: win.scrollbarPolicy; implicitWidth: 12 }
+        readonly property bool bulkRemove: typeof session !== "undefined" && session.bulkRemoveInProgress
+        add: Transition { NumberAnimation { properties: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic } }
+        remove: Transition { NumberAnimation { properties: "opacity"; to: 0; duration: list.bulkRemove ? 0 : 120; easing.type: Easing.OutCubic } }
+        displaced: Transition { NumberAnimation { properties: "x,y"; duration: list.bulkRemove ? 0 : 180; easing.type: Easing.OutCubic } }
+
 
         delegate: TorrentRow { win: libraryView.win }
     }
@@ -369,7 +381,7 @@ Item {
                 var top = marquee.y, bot = marquee.y + marquee.height
                 var rows = []
                 for (var i = 0; i < list.count; ++i) {
-                    var ry = list.headerItem.height + i * rowH - list.contentY
+                    var ry = i * rowH - list.contentY
                     if (ry + rowH > top && ry < bot) rows.push(i)
                 }
                 win.selectedRows = rows

@@ -77,7 +77,7 @@ Window {
     }
     function promptRenameFile(idx, current) {
         inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), current, "",
-            function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) })
+            function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) }, true)
     }
     // Shared by the File menu, the toolbar "Link" button and the empty state.
     function promptHttpDownload() {
@@ -123,6 +123,7 @@ Window {
             win.layoutClassic = (lc === true || lc === 1 || lc === "1" || lc === "true")
             win.detailBottom = settings.get("detailBottom") === true
             win.showDownloadChip = settings.get("showDownloadChip") !== false
+            win.scrollbarsAlwaysOn = settings.get("scrollbarsAlwaysOn") === true
             var sc = settings.get("sortColumn")
             if (sc) {
                 win.sortColumn = sc
@@ -229,6 +230,9 @@ Window {
     // The Peers tab pulls every peer from libtorrent — only keep it live while open.
     readonly property bool peersTabOpen: win.hasSel && win.detailTab === 1
     onPeersTabOpenChanged: if (typeof session !== "undefined") session.setDetailPeersActive(peersTabOpen)
+    // Scrollbar visibility: false = AsNeeded (auto-hide), true = AlwaysOn.
+    property bool scrollbarsAlwaysOn: false
+    readonly property int scrollbarPolicy: scrollbarsAlwaysOn ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
     property string sortColumn: ""
     property bool sortAsc: true
     onSortColumnChanged: if (typeof settings !== "undefined") settings.set("sortColumn", sortColumn)
@@ -570,7 +574,7 @@ Window {
                                               "", i18n.t("extract_password_ph"),
                                               function(pw){ session.extractSelected(pw) })
         }
-        CtxItem { iconSrc: "qrc:/icons/pencil.svg"; text: (i18n.language, i18n.t("ctx_rename")); onTriggered: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }) }
+        CtxItem { iconSrc: "qrc:/icons/pencil.svg"; text: (i18n.language, i18n.t("ctx_rename")); onTriggered: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }, !session.selectedIsFolder()) }
         CtxItem {
             // only once the data is done — marking mid-download freezes the torrent
             visible: session.selectedDataDone || session.selectedCompleted
@@ -1609,11 +1613,12 @@ Window {
     Shortcut {
         sequence: "F2"; enabled: win.hasSel
         onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"),
-                                          session.selectedName, "", function(t){ session.renameSelected(t) })
+                                          session.selectedName, "", function(t){ session.renameSelected(t) },
+                                          !session.selectedIsFolder())
     }
     // Delete -> Remove dialog. A focused editable field overrides this, so it
     // still deletes characters while typing. Mirrors F2 -> Rename.
-    Shortcut { sequence: StandardKey.Delete; enabled: win.hasSel; onActivated: removeDlg.open() }
+    Shortcut { sequence: "Del"; enabled: win.hasSel; onActivated: removeDlg.open() }
     Shortcut { sequence: "Ctrl+1"; onActivated: win.setFilter("all") }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.setFilter("downloading") }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.setFilter("seeding") }

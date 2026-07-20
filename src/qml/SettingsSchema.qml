@@ -46,6 +46,7 @@ QtObject {
             { type: "toggle", key: "layoutClassic", label: (i18n.language, i18n.t("set_layout_classic")), note: (i18n.language, i18n.t("set_layout_classic_note")) },
             { type: "toggle", key: "detailBottom", label: (i18n.language, i18n.t("set_detail_bottom")), note: (i18n.language, i18n.t("set_detail_bottom_note")) },
             { type: "toggle", key: "showDownloadChip", label: (i18n.language, i18n.t("set_show_dl_chip")), on: true, note: (i18n.language, i18n.t("set_show_dl_chip_note")) },
+            { type: "toggle", key: "scrollbarsAlwaysOn", label: (i18n.language, i18n.t("set_scrollbars_always")), note: (i18n.language, i18n.t("set_scrollbars_always_note")) },
             { type: "profiles", label: (i18n.language, i18n.t("set_custom_profile")),   customOnly: true },
             { type: "color",  role: "bg",        label: (i18n.language, i18n.t("set_custom_bg")),        customOnly: true },
             { type: "color",  role: "panel",     label: (i18n.language, i18n.t("set_custom_panel")),     customOnly: true },
