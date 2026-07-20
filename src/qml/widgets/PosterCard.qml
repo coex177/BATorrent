@@ -17,6 +17,7 @@ Item {
     property real rating: 0
     property string type: ""
     signal activated()
+    signal getWatch()       // ▶ one-click Get & Watch (movie/series)
 
     property int posterW: 150
     readonly property int posterH: Math.round(posterW * 1.5)
@@ -168,6 +169,37 @@ Item {
             color: Theme.t2; font.pixelSize: 12; font.family: Theme.fontSans; lineHeight: 1.38
         }
         background: Rectangle { color: Theme.panel; border.color: Theme.hair; border.width: 1; radius: 9 }
+    }
+
+    // ▶ Get & Watch — centered play button on hover (movie/series only). On top
+    // of the main MouseArea so its own click is intercepted.
+    Rectangle {
+        visible: card.type !== "game" && (ma.containsMouse || pbMa.containsMouse)
+        x: (card.posterW - width) / 2
+        y: (card.posterH - height) / 2
+        width: 46; height: 46; radius: 23
+        // dark glass disc; red only as the hover accent (ring + glyph),
+        // never a filled surface — same language as the grid tiles
+        color: "#cc101014"
+        border.color: pbMa.containsMouse ? Theme.accent : Qt.rgba(1, 1, 1, 0.25)
+        border.width: 1
+        scale: pbMa.containsMouse ? 1.08 : 1.0
+        Behavior on border.color { ColorAnimation { duration: 120 } }
+        Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+        IconImg {
+            anchors.centerIn: parent
+            anchors.horizontalCenterOffset: 1
+            src: "qrc:/icons/play.svg"
+            tint: pbMa.containsMouse ? Theme.accent : "#ffffff"
+            s: 18
+        }
+        MouseArea {
+            id: pbMa
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: card.getWatch()
+        }
     }
 
     // "My List" toggle — on top of the main MouseArea so it gets the click

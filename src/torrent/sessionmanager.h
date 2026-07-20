@@ -5,8 +5,12 @@
 #ifndef SESSIONMANAGER_H
 #define SESSIONMANAGER_H
 
-#include "types.h"
-#include "../app/statshistory.h"
+#include "torrent/types.h"
+#include "torrent/iengine.h"
+#include "services/platform/statshistory.h"
+#ifdef BAT_LIBTORRENT_FORK
+#include "services/integrations/geoipprovider.h"
+#endif
 #include <QObject>
 #include <QTimer>
 #include <QString>
@@ -14,6 +18,8 @@
 #include <libtorrent/session.hpp>
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_status.hpp>
+#include <libtorrent/alert_types.hpp>
+#include "torrent/proxycontroller.h"
 #include <QMap>
 #include <QSet>
 #include <QHash>
@@ -22,7 +28,9 @@
 #include <vector>
 #include <set>
 
-class SessionManager : public QObject
+class ArchiveExtractor;
+
+class SessionManager : public IEngine
 {
     Q_OBJECT
 public:
@@ -46,7 +54,7 @@ public:
     // applies them.
     void addTorrentWithPriorities(const QString &filePath, const QString &savePath,
                                   const std::vector<int> &filePriorities);
-    void removeTorrent(int index, bool deleteFiles = false);
+    void removeTorrent(int index, bool deleteFiles = false, bool permanent = false);
     void pauseTorrent(int index);
     void resumeTorrent(int index);
     void pauseAll();
@@ -55,6 +63,9 @@ public:
     int torrentCount() const;
     TorrentInfo torrentAt(int index) const;
     QStringList torrentFileNames(int index) const;   // relative file paths, empty pre-metadata
+    bool torrentHasArchives(int index) const;        // any extractable archive present
+    bool torrentHasVideo(int index) const;           // any playable video file present
+    void extractTorrent(int index, const QString &password);   // manual extract (tries password first)
     std::vector<PeerInfo> peersAt(int index, int maxPeers = 0) const;   // 0 = no cap
     std::vector<FileInfo> filesAt(int index) const;
     std::vector<TrackerInfo> trackersAt(int index) const;
@@ -85,6 +96,10 @@ public:
     // reads only what's safely written. 0 if the start byte isn't ready yet.
     qint64 streamContiguousAvailableBytes(int torrentIndex, int fileIndex,
                                           qint64 fromByte, qint64 cap = 8 * 1024 * 1024) const;
+    // Download stats for the player: { totalBytes, downloadedBytes, progress,
+    // buffered } where progress is the file fraction on disk and buffered is the
+    // contiguous fraction from the start (what's safe to seek to).
+    QVariantMap streamFileStats(int torrentIndex, int fileIndex) const;
     // Urgency-fetch a window of pieces from `startByte` forward (seek): sets
     // increasing piece deadlines so libtorrent fetches them in playback order.
     void streamSetDeadlineWindow(int torrentIndex, int fileIndex, qint64 startByte,
@@ -262,14 +277,7 @@ public:
     // Recently-removed history — persistent ring buffer of the last N removed
     // torrents' resume snapshots, so the user can re-add even after closing
     // the undo toast. Stored as files under <AppData>/removed/{hash}.resume.
-    struct RemovedEntry {
-        QString hash;
-        QString name;
-        qint64 totalSize;
-        qint64 removedAt; // unix seconds
-        QString resumePath; // absolute path to the snapshot file
-    };
-    QList<RemovedEntry> recentlyRemoved() const;
+    QList<RemovedEntry> recentlyRemoved() const;   // RemovedEntry now in types.h (shared with IEngine)
     bool restoreRemoved(const QString &hash);
     void clearRemovedHistory();
 
@@ -342,6 +350,12 @@ public:
     // Proxy
     void setProxySettings(int type, const QString &host, int port,
                           const QString &user, const QString &pass);
+    // Leak-proof tunnel: route trackers through the proxy too and kill the vectors
+    // that announce the real IP behind a proxy (UPnP/NAT-PMP port maps + LSD
+    // broadcasts) + anonymous_mode. The libtorrent 2.0 equivalent of the old
+    // force_proxy. Re-applies the current proxy when toggled.
+    void setProxyLeakProof(bool enabled);
+    bool proxyLeakProof() const;
     int proxyType() const;
     QString proxyHost() const;
     int proxyPort() const;
@@ -354,31 +368,12 @@ public:
     QString ipFilterPath() const;
     int ipFilterCount() const;
 
-    // Advanced libtorrent tuning — exposed in Settings → Advanced.
-    // Each setter applies immediately via settings_pack and persists to
-    // QSettings so the value survives restarts.
-    struct AdvancedSettings {
-        int aioThreads = 10;
-        int hashingThreads = 2;
-        int filePoolSize = 100;
-        int checkingMemUsage = 512;   // × 16KB = 8MB default
-        int diskIOReadMode = 0;       // 0=EnableOSCache, 1=DisableOSCache
-        int diskIOWriteMode = 0;      // 0=EnableOSCache, 1=DisableOSCache, 2=WriteThrough
-        int connectionsLimit = 500;
-        int connectionSpeed = 30;
-        int maxUploadsPerTorrent = 4;
-        int maxConnectionsPerTorrent = 100;
-        int unchokeSlotsLimit = 20;
-        int chokingAlgorithm = 0;     // 0=FixedSlots, 1=RateBased
-        int seedChokingAlgorithm = 0; // 0=RoundRobin, 1=FastestUpload, 2=AntiLeech
-        int sendBufferWatermark = 500; // KB
-        int outgoingPortMin = 0;
-        int outgoingPortMax = 0;
-        bool rateLimitIpOverhead = false;
-        bool ignoreLimitsOnLAN = true;
-    };
+    // Advanced libtorrent tuning — exposed in Settings → Advanced. The struct
+    // lives in types.h (so IEngine/IPC can name it). Each setter applies
+    // immediately via settings_pack and persists to QSettings.
     AdvancedSettings advancedSettings() const;
     void setAdvancedSettings(const AdvancedSettings &s);
+    bool applySetting(const QString &key, const QVariant &v);   // key→setter routing (shared w/ IPC)
 
     // Bandwidth scheduler
     void setAltSpeedLimits(int downKbps, int upKbps);
@@ -422,45 +417,66 @@ public:
     qint64 globalDownloaded() const;
     qint64 globalUploaded() const;
     float globalRatio() const;
+    QVariantMap statsWrapped(int year) const;   // "Year in Torrents" aggregation
 
     // Per-session statistics
     qint64 sessionDownloaded() const;
     qint64 sessionUploaded() const;
 
     // Detailed session metrics (from libtorrent session_stats)
-    struct DetailedStats {
-        int dhtNodes = 0;
-        int peersCount = 0;
-        qint64 totalWasted = 0;       // redundant + failed bytes
-        int diskReadQueue = 0;
-        int diskWriteQueue = 0;
-        bool hasIncomingConnections = false;
-    };
-    DetailedStats detailedStats() const;
+    DetailedStats detailedStats() const;   // DetailedStats now in types.h (shared with IEngine)
 
     // Torrent count tracking
     void incrementTorrentCount();
+    void scheduleTrash(const QStringList &targets, int attempt);
+    void scheduleDelete(const QStringList &targets, int attempt);   // permanent, skips Trash
+    void checkMemoryGuard();   // circuit breaker: pause/bail if RSS runs away
+    void scanTorrentForThreats(const lt::torrent_handle &h, const QString &name);
+    void noteTorrentFault(const lt::torrent_handle &h, const QString &name);   // auto-pause a thrashing torrent
+    void saveSecurityWarned();
+    void maybeAutoExcludeDefender(const QString &savePath);   // opt-in, Windows-only
     int totalTorrentsAdded() const;
 
     int importFromQBittorrent(const QString &defaultSavePath);
 
 signals:
     void torrentAdded(int index);
-    void torrentRemoved(int index);
-    void torrentsUpdated();
-    void torrentFinished(const QString &name, const QString &infoHash);
-    void torrentError(const QString &message);
-    void killSwitchTriggered();
+    void extractionStarted(const QString &infoHash);
     void interfaceRestored();
-    void altSpeedsActiveChanged(bool active);
-    void portStatusChanged(int status);
+    // torrentsUpdated / torrentFinished / extractionCompleted /
+    // altSpeedsActiveChanged / portStatusChanged / torrentRemoved / torrentError /
+    // suspiciousFilesDetected / killSwitchTriggered are inherited from IEngine.
 
 private slots:
     void updateStats();
 
 private:
     static QString stateToString(lt::torrent_status::state_t state);
-    void processAlerts();
+    void processAlerts();   // pumps the libtorrent alert queue, dispatches one per type
+    void onStateUpdate(const lt::state_update_alert *su);
+    void onTorrentFinished(const lt::torrent_finished_alert *fa);
+    void onTorrentError(const lt::torrent_error_alert *ea);
+    void onFileError(const lt::file_error_alert *fe);
+    void onStorageMovedFailed(const lt::storage_moved_failed_alert *sm);
+    void onListenFailed(const lt::listen_failed_alert *lf);
+    void onListenSucceeded();
+    void onPortmapSucceeded();
+    void onPortmapFailed();
+    void onMetadataFailed(const lt::metadata_failed_alert *mf);
+    void onResumeDataReady(const lt::save_resume_data_alert *rd);
+    void onResumeDataFailed();
+    void onPieceFinished(const lt::piece_finished_alert *pf);
+    void onAlertsDropped(const lt::alerts_dropped_alert *ad);
+    void onFastresumeRejected(const lt::fastresume_rejected_alert *fr);
+    void onTorrentChecked(const lt::torrent_checked_alert *tc);
+    void onMetadataReceived(const lt::metadata_received_alert *mr);
+    void onFileCompleted(const lt::file_completed_alert *fc);
+#ifdef BAT_LIBTORRENT_FORK
+    void onExternalIp(const lt::external_ip_alert *ea);
+    // Installs the same-country peer-ranking classifier once both our external
+    // IP and the GeoIP DB are known (either can arrive first). One-shot.
+    void tryInstallGeoClassifier();
+#endif
     void checkSeedRatios();
     void checkSeedingLimits();
     void checkInterfaceStatus();
@@ -476,6 +492,11 @@ private:
     // Request an immediate resume-data write for a handle (so a freshly-added,
     // never-downloaded torrent survives a restart). Mirrors the piece_finished path.
     void stageResumeSave(const lt::torrent_handle &h);
+    // Persist a metadata-less magnet's add params as its .resume file —
+    // saveResumeData() skips torrents without metadata, so without this a
+    // crash mid-fetch silently drops the torrent from the list.
+    void persistMagnetParams(lt::add_torrent_params atp, const QString &hash,
+                             const QString &finalSavePath);
     QString torrentHash(int index) const;
     // Fetch the cached torrent_status for a handle, falling back to a live
     // status() call only when the cache hasn't been populated yet (just after
@@ -497,10 +518,16 @@ private:
     mutable std::map<lt::torrent_handle, lt::torrent_status> m_statusCache;
     QTimer m_updateTimer;
     std::unique_ptr<StatsHistory> m_statsHistory;
+#ifdef BAT_LIBTORRENT_FORK
+    GeoIpProvider m_geoIp;
+    uint32_t m_externalIp = 0;      // our public IPv4 (host order), 0 = unknown
+    bool m_geoInstalled = false;    // classifier installed (one-shot)
+#endif
     bool m_dhtEnabled = true;
     int m_encryptionMode = 0;
     bool m_utpEnabled = true;
     bool m_anonymousMode = false;
+    bool m_diskAutoPaused = false;   // hysteresis: active downloads paused due to critically low disk
     bool m_forceIpv4 = false;
     bool m_ptMode = false;
     bool m_blockLeechers = false;
@@ -548,6 +575,10 @@ private:
     // can request a save without thrashing the disk on every piece. Saved
     // only if the last save was more than kMinResumeSaveIntervalSec ago.
     std::map<lt::torrent_handle, qint64> m_lastResumeSaveAt;
+    // Fault isolation: count clustered errors per torrent; once a torrent keeps
+    // thrashing we pause it so it can't destabilize the rest of the app.
+    std::map<lt::torrent_handle, int> m_faultCount;
+    std::map<lt::torrent_handle, qint64> m_faultLastAt;
     // Info-hashes of recently removed torrents. Used to drop in-flight
     // save_resume_data_alerts that arrive after removeTorrent, which would
     // otherwise re-create the .resume file we just deleted.
@@ -602,8 +633,15 @@ private:
     // Auto-extract
     bool m_autoExtract = false;
     bool m_autoExtractDelete = false;
+    bool m_warnSuspiciousFiles = true;
+    bool m_autoDefenderExclude = false;
+    QSet<QString> m_securityWarned;          // info-hashes already warned about (warn once)
+    QSet<QString> m_defenderExcludedRoots;   // save roots already sent to Defender
     QStringList m_extractPasswords;
-    void extractArchives(const QString &savePath, const QString &torrentName);
+    ArchiveExtractor *m_extractor = nullptr;   // owns the QProcess extraction orchestration
+    void extractArchives(const QString &savePath, const QString &torrentName,
+                         const QString &priorityPassword = QString(),
+                         const QString &infoHash = QString());
 
     // Auto-move
     bool m_autoMoveEnabled = false;
@@ -639,24 +677,18 @@ private:
     bool m_killSwitchActive = false;
     std::set<lt::torrent_handle> m_killSwitchPaused;
 
-    // Proxy
-    int m_proxyType = 0; // 0=none, 1=SOCKS5, 2=HTTP
-    QString m_proxyHost;
-    int m_proxyPort = 0;
-    QString m_proxyUser;
-    QString m_proxyPass;
+    // Proxy (SOCKS5/HTTP + leak-proof mode) — config + settings-building live here.
+    bat::ProxyController m_proxy;
 
     // IP filter
     QString m_ipFilterPath;
     int m_ipFilterCount = 0;
 
-    // Magnets that haven't resolved metadata within this window get aborted
-    // and emit a torrentError. 0 = no timeout.
-    int m_magnetTimeoutSeconds = 300; // 5 min default
-    // Tracks when each magnet was added, by info_hash, so we can age them
-    // out after m_magnetTimeoutSeconds without metadata.
+    // Tracks when each magnet was added so a still-fetching-metadata torrent
+    // can show "looking for peers (Xm)" via stateDetail instead of the app
+    // silently giving up and deleting it.
     std::map<lt::torrent_handle, qint64> m_magnetAddedAt;
-    void checkMagnetTimeouts();
+    void checkMagnetTimeouts();   // prunes m_magnetAddedAt once metadata arrives (or the handle dies)
 
     // Bandwidth scheduler
     int m_altDownLimit = 0;

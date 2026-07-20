@@ -25,17 +25,15 @@
   <img alt="Fork build" src="https://img.shields.io/badge/fork%20build-Windows%20x86__64%20·%20alpha-dc2626?style=flat-square">
 </p>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 <p align="center">
-  <img src="src/images/with_startup.gif" alt="BATorrent — ábrelo y listo, las carátulas se resuelven solas" width="860">
+  <img src="src/images/shot-grid-v43.jpg" alt="BATorrent — ábrelo y listo, las carátulas se resuelven solas" width="860">
 </p>
 
 La mayoría de los clientes de torrent parecen un formulario de Hacienda. Este muestra tus descargas como un **muro de carátulas de películas, series y juegos** — lo mismo que reconoces en Netflix o Steam — y te deja vestirlo con seis temas (o tu propio fondo de pantalla). Por dentro lleva el probado motor **libtorrent**, así que no es un juguete bonito: es un cliente de verdad que da la casualidad de que tiene buen gusto.
 
-> **Sin anuncios. Sin telemetría. Sin versión "Pro". Sin cuenta.** La única petición que hace por su cuenta es la comprobación de actualizaciones en GitHub, y puedes desactivarla. El código está aquí mismo — lee [`updater.cpp`](src/app/updater.cpp) y compruébalo tú mismo.
+> **Sin anuncios. Sin telemetría. Sin versión "Pro". Sin cuenta.** La única petición que hace por su cuenta es la comprobación de actualizaciones en GitHub, y puedes desactivarla. El código está aquí mismo — lee [`updater.cpp`](src/services/integrations/updater.cpp) y compruébalo tú mismo.
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 ## Qué cambia en este fork
 
@@ -97,7 +95,15 @@ Prioridad por archivo · descarga secuencial · inyección automática de tracke
 
 </details>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
+
+## El motor
+
+La mayoría de las apps de torrent enlazan libtorrent estándar. BATorrent lleva un pequeño **fork parcheado** que le permite cambiar comportamientos del motor que la API pública no alcanza:
+
+- **Arranque más rápido de la tubería.** En un enlace de gran ancho de banda y alta latencia, la tubería de peticiones estándar crece de a un paso; el fork la hace crecer geométricamente, llenando una tubería ancha en una fracción de las idas y vueltas. Medido en ~+27 % en un enlace rápido en el propio benchmark A/B del proyecto, sin los baches del estándar entre ejecuciones, y nunca empeora.
+- **Preferencia por peers del mismo país.** Una base de datos GeoIP sin conexión (db-ip Lite) etiqueta cada peer por país, y el ranking de peers del fork prefiere los de tu propio país cuando puede elegir — lo que suele significar menor latencia y menos rutas transfronterizas con throttling.
+
+Ambas son funciones del fork en tiempo de compilación (desactivadas en un build estándar) y se aplican como parches versionados en [`third_party/patches/`](third_party/patches), no como una copia incrustada.
 
 ## Conseguirlo
 
@@ -119,7 +125,6 @@ Después solo arrastra un `.torrent` o un magnet a la ventana. Eso es todo.
 
 <sub>**macOS:** todavía sin notarizar (el programa de desarrollador de Apple es de pago). Homebrew es la vía más suave — `brew` quita la marca de cuarentena, así que abre sin el aviso de Gatekeeper. Con el `.dmg`, clic derecho → **Abrir** la primera vez.</sub>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 <details>
 <summary><b>Compilar desde el código fuente y notas de ingeniería</b></summary>

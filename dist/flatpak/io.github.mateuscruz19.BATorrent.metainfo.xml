@@ -63,6 +63,28 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="4.7.0" date="2026-07-19">
+      <description>
+        <ul>
+          <li>Reworked built-in player: unified audio/subtitle/speed panel, seek-bar frame previews, next-episode countdown, chapter skip, ambient glow, centered minimalist controls</li>
+          <li>Queue filter and status for downloads waiting on a slot; favorite save folders with free space in the add dialogs; disk gauge rotates through every drive</li>
+          <li>Windows: per-type file/protocol association toggles and a Refresh button</li>
+          <li>Fixed a Linux AppImage launch crash (shipped the wrong libtorrent), several magnet-dialog bugs, and remove-with-files not finishing on quit</li>
+          <li>Settings show a "Saved" confirmation; quieter completed cards; cover-less detail layout</li>
+        </ul>
+      </description>
+    </release>
+    <release version="4.6.0" date="2026-07-17">
+      <description>
+        <ul>
+          <li>Faster peer discovery: multi-router DHT bootstrap, announce to every tracker tier, open trackers added to magnets (removed for private torrents)</li>
+          <li>Magnets survive a crash before their metadata arrives; removals no longer resurrect or leave data behind</li>
+          <li>Download cards show downloaded-of-total, queue position and a clearer pre-download status</li>
+          <li>Refreshed context menu with icons; refined badges, seeding indicator and detail panel</li>
+          <li>Random high listen port on first run; IPv6 listening restored when a port is configured</li>
+        </ul>
+      </description>
+    </release>
     <release version="3.0.3" date="2026-06-05">
       <description>
         <ul>

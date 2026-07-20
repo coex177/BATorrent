@@ -16,13 +16,36 @@ import "widgets"
 Rectangle {
     id: rail
     implicitWidth: collapsed ? 64 : 188
-    color: Theme.elev
+    color: Theme.panel
     clip: true
 
-    property int currentIndex: 0
-    property bool discoverVisible: true     // gated off in store builds (step ⑦)
+    property int currentIndex: 0            // bound down from the window; never self-assigned
     property bool collapsed: false
+    signal pageRequested(int page)
     signal settingsClicked()
+    signal selectTorrent(string infoHash)
+    signal makeRoomRequested()
+
+    // Contextual rail slot (rotating carousel): the state lives in the shared
+    // DownloadCarousel so the top-bar chip drives the exact same logic.
+    readonly property DownloadCarousel carousel: DownloadCarousel {
+        id: car
+        currentPage: rail.currentIndex
+        hovered: dlHov.hovered
+        active: rail.showDl
+    }
+    property bool showDownloadChip: true    // host setting gate
+    readonly property bool showDl: !collapsed && car.dlList.length > 0 && showDownloadChip
+    Connections {
+        target: car
+        function onDlIndexChanged() { dlFade.restart() }
+    }
+    SequentialAnimation {
+        id: dlFade
+        NumberAnimation { target: dlContent; property: "opacity"; to: 0; duration: 160; easing.type: Easing.InCubic }
+        ScriptAction { script: car.dlShown = car.dlIndex }
+        NumberAnimation { target: dlContent; property: "opacity"; to: 1; duration: 300; easing.type: Easing.OutCubic }
+    }
 
     Behavior on implicitWidth { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
@@ -45,13 +68,9 @@ Rectangle {
     function buildItems() {
         var all = [
             { icon: "qrc:/icons/download.svg", label: i18n.t("nav_downloads"), page: 0 },
-            { icon: "qrc:/icons/discover.svg", label: i18n.t("nav_discover"),  page: 1 },
-            { icon: "qrc:/icons/search.svg",   label: i18n.t("nav_search"),    page: 2 },
-            { icon: "qrc:/icons/hub.svg",      label: i18n.t("nav_hub"),       page: 3 }
+            { icon: "qrc:/icons/search.svg",   label: i18n.t("nav_find"),      page: 1 },
+            { icon: "qrc:/icons/hub.svg",      label: i18n.t("nav_hub"),       page: 2 }
         ]
-        // Store builds hide Discover (page 1); other pages keep their indices.
-        if (typeof isStoreBuild !== "undefined" && isStoreBuild)
-            return all.filter(function (x) { return x.page !== 1 })
         return all
     }
 
@@ -122,7 +141,6 @@ Rectangle {
                 id: navItem
                 required property var modelData
                 readonly property bool active: rail.currentIndex === modelData.page
-                visible: !(modelData.page === 1 && !rail.discoverVisible)
                 Layout.fillWidth: true
                 Layout.preferredHeight: visible ? 46 : 0
                 Layout.leftMargin: 10
@@ -177,7 +195,7 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: rail.currentIndex = navItem.modelData.page
+                    onClicked: rail.pageRequested(navItem.modelData.page)
                 }
                 ToolTip.text: navItem.modelData.label
                 ToolTip.visible: rail.collapsed && itemMa.containsMouse
@@ -185,9 +203,69 @@ Rectangle {
             }
         }
 
-        Item { Layout.fillHeight: true }   // push donate + Settings + collapse to the bottom
+        Item { Layout.fillHeight: true }   // push disk + donate + Settings + collapse to the bottom
 
-        // ----- donate (solid red heart) -----
+        // ----- disk usage: one block per volume torrents save to (multi-HD) -----
+        Column {
+            Layout.fillWidth: true
+            Layout.leftMargin: 18; Layout.rightMargin: 18
+            spacing: 11
+            visible: !rail.collapsed && typeof session !== "undefined" && session.diskVolumes.length > 0
+            Repeater {
+                model: typeof session !== "undefined" ? session.diskVolumes : []
+                delegate: Item {
+                    id: dvItem
+                    required property var modelData
+                    width: parent.width
+                    height: 30
+                    Text {
+                        id: dvName
+                        anchors.left: parent.left; anchors.top: parent.top
+                        anchors.right: dvFree.left; anchors.rightMargin: 8
+                        text: modelData.name
+                        color: dvMa.containsMouse ? Theme.t2 : Theme.t4; elide: Text.ElideRight
+                        font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.0
+                        font.capitalization: Font.AllUppercase; font.family: Theme.fontSans
+                    }
+                    Text {
+                        id: dvFree
+                        anchors.right: parent.right; anchors.top: parent.top
+                        text: (i18n.language, i18n.t("status_free_space")).arg(modelData.free)
+                        color: Theme.t3; font.pixelSize: 11; font.family: Theme.fontSans; font.features: Theme.tnum
+                    }
+                    Rectangle {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                        height: 3; radius: 2; color: Theme.track
+                        Rectangle {
+                            height: parent.height; radius: 2
+                            width: parent.width * Math.max(0.02, Math.min(1, modelData.usedFraction))
+                            // neutral gauge; color only signals real disk pressure
+                            color: modelData.usedFraction > 0.95 ? Theme.accent
+                                 : modelData.usedFraction > 0.85 ? Theme.amber : Theme.t4
+                        }
+                    }
+                    // the bar was purely decorative — make it the entry point to
+                    // free up space, since disk pressure is the one signal the
+                    // app never let the user act on
+                    MouseArea {
+                        id: dvMa
+                        anchors.fill: parent
+                        anchors.margins: -4
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: rail.makeRoomRequested()
+                    }
+                }
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true; Layout.leftMargin: 16; Layout.rightMargin: 16
+            Layout.topMargin: 10; Layout.bottomMargin: 4
+            implicitHeight: 1; color: Theme.hairSoft
+            visible: !rail.collapsed
+        }
+
+        // ----- donate (heart: gray at rest, red on hover) -----
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 46
@@ -204,7 +282,7 @@ Rectangle {
                 anchors.leftMargin: rail.collapsed ? 13 : 17
                 anchors.rightMargin: 12
                 spacing: 13
-                IconImg { Layout.alignment: Qt.AlignVCenter; src: "qrc:/icons/heart.svg"; tint: Theme.accent; s: 18 }
+                IconImg { Layout.alignment: Qt.AlignVCenter; src: "qrc:/icons/heart.svg"; tint: donMa.containsMouse ? Theme.accent : Theme.t3; s: 18 }
                 Text {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignVCenter
@@ -229,9 +307,10 @@ Rectangle {
             ToolTip.delay: 400
         }
 
-        // ----- settings -----
+        // ----- settings (page 4 — fullscreen tab, not a separate window) -----
         Item {
             id: settingsItem
+            readonly property bool active: rail.currentIndex === 3
             Layout.fillWidth: true
             Layout.preferredHeight: 46
             Layout.leftMargin: 10
@@ -239,24 +318,35 @@ Rectangle {
             Rectangle {
                 anchors.fill: parent
                 radius: 10
-                color: setMa.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
+                color: settingsItem.active ? Theme.hover
+                     : (setMa.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
                 Behavior on color { ColorAnimation { duration: 140 } }
+                Rectangle {
+                    anchors.left: parent.left; anchors.leftMargin: 3
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 3
+                    height: settingsItem.active ? 22 : 0
+                    radius: 2
+                    color: Theme.accent
+                    Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
+                }
             }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: rail.collapsed ? 13 : 17
                 anchors.rightMargin: 12
                 spacing: 13
-                IconImg { Layout.alignment: Qt.AlignVCenter; src: "qrc:/icons/settings.svg"; tint: Theme.t3; s: 18 }
+                IconImg { Layout.alignment: Qt.AlignVCenter; src: "qrc:/icons/settings.svg"; tint: settingsItem.active ? Theme.t1 : Theme.t3; s: 18; Behavior on tint { ColorAnimation { duration: 140 } } }
                 Text {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignVCenter
                     text: (i18n.language, i18n.t("tb_settings"))
-                    color: Theme.t2
+                    color: settingsItem.active ? Theme.t1 : Theme.t2
                     font.pixelSize: 14
-                    font.weight: Font.Medium
+                    font.weight: settingsItem.active ? Font.DemiBold : Font.Medium
                     font.family: Theme.fontSans
                     opacity: rail.collapsed ? 0 : 1
+                    Behavior on color { ColorAnimation { duration: 140 } }
                     Behavior on opacity { NumberAnimation { duration: 140 } }
                 }
             }
@@ -272,7 +362,7 @@ Rectangle {
             ToolTip.delay: 400
         }
 
-        // ----- collapse / expand toggle (bottom) -----
+        // ----- collapse / expand toggle (back to just under Settings, as it always was) -----
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 46
@@ -321,17 +411,123 @@ Rectangle {
             ToolTip.delay: 400
         }
 
-        // ----- version (bottom) -----
-        Text {
+        // ----- contextual rail slot (bottom): downloading off Downloads, continue/resume on it -----
+        // height animates 0↔full so switching tabs slides instead of jumping, and a
+        // finished/empty list leaves no empty hole.
+        ColumnLayout {
             Layout.fillWidth: true
-            Layout.leftMargin: 18
-            Layout.bottomMargin: 12
-            text: (typeof themeBridge !== "undefined" && themeBridge.appVersion) ? ("v" + themeBridge.appVersion) : ""
-            color: Theme.t4
-            font.pixelSize: 10; font.weight: Font.Medium; font.letterSpacing: 0.4
-            font.family: Theme.fontMono
-            opacity: rail.collapsed ? 0 : 1
-            Behavior on opacity { NumberAnimation { duration: 140 } }
+            Layout.leftMargin: 18; Layout.rightMargin: 18
+            Layout.bottomMargin: 4
+            spacing: 9
+            clip: true
+            Layout.preferredHeight: rail.showDl ? implicitHeight : 0
+            opacity: rail.showDl ? 1 : 0
+            Behavior on Layout.preferredHeight { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+            Behavior on opacity { NumberAnimation { duration: 180 } }
+
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.hair }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: (i18n.language, i18n.t(car.slotResume ? "nav_continue" : (car.slotSeed ? "nav_seeding" : "nav_downloading"))); color: Theme.t4; font.pixelSize: 9; font.weight: Font.Bold; font.letterSpacing: 1.0; font.capitalization: Font.AllUppercase; font.family: Theme.fontSans }
+                Item { Layout.fillWidth: true }
+                Text { visible: car.dlList.length > 1; text: (car.dlShown + 1) + "/" + car.dlList.length; color: Theme.t4; font.pixelSize: 10; font.family: Theme.fontSans; font.features: Theme.tnum }
+            }
+
+            // loose content (no box) — uses the full rail width
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 60
+                HoverHandler { id: dlHov }
+                RowLayout {
+                    id: dlContent
+                    anchors.fill: parent
+                    spacing: 12
+                    PosterThumb {
+                        Layout.preferredWidth: 50; Layout.preferredHeight: 60; Layout.alignment: Qt.AlignVCenter
+                        posterUrl: car.dlItem ? (car.dlItem.poster || "") : ""
+                        label: car.dlItem ? (car.dlItem.title || "") : ""
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; Layout.alignment: Qt.AlignVCenter
+                        spacing: 6
+                        Text { Layout.fillWidth: true; text: car.dlItem ? (car.dlItem.title || "") : ""; color: Theme.t1; font.pixelSize: 14; font.weight: Font.DemiBold; font.family: Theme.fontSans; elide: Text.ElideRight }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 6
+                            // svg play/pause glyphs — ▶/⏸ text renders as
+                            // colored system emoji on Windows
+                            IconImg {
+                                visible: car.dlItem && (car.slotResume || car.dlItem.paused === true)
+                                src: car.slotResume ? "qrc:/icons/play.svg" : "qrc:/icons/pause.svg"
+                                tint: Theme.accent; s: 11
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+                            Text {
+                                text: !car.dlItem ? ""
+                                      : car.slotResume ? i18n.t("hub_resume")
+                                      : (car.dlItem.paused === true) ? i18n.t("state_paused")
+                                      : car.slotSeed ? ("↑ " + (car.dlItem.upSpeed || ""))
+                                      : ("↓ " + (car.dlItem.downSpeed || ""))
+                                color: Theme.accent; font.pixelSize: 13; font.family: Theme.fontSans; font.features: Theme.tnum
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                text: !car.dlItem ? ""
+                                      : car.slotResume ? (car.dlItem.metric || "")
+                                      : car.slotSeed ? ("⇅ " + (car.dlItem.ratio || "0.00"))
+                                      : (Math.floor((car.dlItem.progress || 0) * 100) + "%")
+                                color: Theme.t2; font.pixelSize: 13; font.weight: Font.DemiBold; font.family: Theme.fontSans; font.features: Theme.tnum
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true; Layout.preferredHeight: 4; radius: 2; color: Theme.track
+                            Rectangle { anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom; width: parent.width * Math.min(1, car.dlItem ? (car.dlItem.progress || 0) : 0); radius: 2; color: Theme.accent }
+                        }
+                    }
+                }
+                MouseArea {
+                    id: dlMa; anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (!car.dlItem) return
+                        if (car.slotResume) {
+                            if (car.dlItem.kind === "game") session.launchGame(car.dlItem.infoHash)
+                            else session.playByHash(car.dlItem.infoHash)
+                        } else {
+                            rail.selectTorrent(car.dlItem.infoHash); rail.pageRequested(0)
+                        }
+                    }
+                }
+
+                // hover nav arrows — scale to any number of downloads (no dot explosion)
+                Rectangle {
+                    anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                    width: 24; height: 24; radius: 12
+                    color: "#ee15151a"; border.color: Theme.hair; border.width: 1
+                    visible: car.dlList.length > 1
+                    opacity: dlHov.hovered ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 130 } }
+                    Text { anchors.centerIn: parent; text: "‹"; color: Theme.t1; font.pixelSize: 16; font.family: Theme.fontSans }
+                    MouseArea { anchors.fill: parent; enabled: dlHov.hovered; cursorShape: Qt.PointingHandCursor
+                        onClicked: car.prev() }
+                }
+                Rectangle {
+                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    width: 24; height: 24; radius: 12
+                    color: "#ee15151a"; border.color: Theme.hair; border.width: 1
+                    visible: car.dlList.length > 1
+                    opacity: dlHov.hovered ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 130 } }
+                    Text { anchors.centerIn: parent; text: "›"; color: Theme.t1; font.pixelSize: 16; font.family: Theme.fontSans }
+                    MouseArea { anchors.fill: parent; enabled: dlHov.hovered; cursorShape: Qt.PointingHandCursor
+                        onClicked: car.next() }
+                }
+            }
+
+            // separator under the card
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.hair }
         }
+
+        // (version moved to the status bar)
+        Item { Layout.preferredHeight: 8 }
     }
 }

@@ -39,7 +39,7 @@ jobs:
       - name: Build tests
         run: |
           cmake -B build-tests -DBAT_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build-tests -j$(nproc) --target test_unit test_security test_memory test_nameparser test_bridge
+          cmake --build build-tests -j$(nproc) --target test_unit test_security test_memory test_nameparser test_bridge test_gamesource test_memguard test_geoipdb
       - name: Run tests
         env:
           LC_ALL: C        # deterministic locale for the formatSize/formatSpeed checks
@@ -51,7 +51,7 @@ jobs:
           # so we gate on the reported result, not the post-run exit code. A
           # real test failure prints the failure summary (no "All tests passed").
           fail=0
-          for t in test_unit test_security test_memory test_nameparser test_bridge; do
+          for t in test_unit test_security test_memory test_nameparser test_bridge test_gamesource test_memguard test_geoipdb; do
             echo "=== $t ==="
             out=$(./build-tests/tests/$t 2>&1) || true
             echo "$out"
@@ -65,9 +65,15 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive   # the vendored libtorrent fork
+
+      # Apply our engine patches (fast_ramp + geo-locality) onto the submodule.
+      - name: Apply fork patches
+        run: ./scripts/apply-fork-patches.sh
 
       # Qt from aqt (6.7) — Ubuntu's apt Qt (6.2) is too old for the QML
-      # (MultiEffect / QtQuick.Effects needs 6.5+). libtorrent/boost/ssl stay apt.
+      # (MultiEffect / QtQuick.Effects needs 6.5+). boost/ssl for the fork stay apt.
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
         with:
@@ -78,21 +84,62 @@ jobs:
       - name: Cache apt packages
         uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # latest
         with:
-          packages: cmake g++ libtorrent-rasterbar-dev libboost-dev libssl-dev libfuse2 libgl-dev libglx-dev libegl-dev imagemagick
-          version: 3.0
+          # NO system libtorrent-rasterbar-dev: we build the vendored fork from
+          # source (BAT_LIBTORRENT_SOURCE) and must bundle THAT .so. A system
+          # libtorrent present here made linuxdeploy resolve the soname to the
+          # stock lib, which lacks the fork's set_geo_local_fn export → the
+          # AppImage crashed at launch with "undefined symbol" (issue #32).
+          packages: cmake g++ libboost-dev libssl-dev libfuse2 libgl-dev libglx-dev libegl-dev imagemagick
+          version: 4
+
+      # Crash reporting (opt-in, same gate as macOS). No apt package for
+      # sentry-native, so build it from source when BAT_SENTRY_DSN is set.
+      - name: Configure Sentry
+        run: |
+          if [ -n "${{ vars.BAT_SENTRY_DSN }}" ]; then
+            sudo apt-get install -y libcurl4-openssl-dev
+            git clone --depth 1 --recurse-submodules --shallow-submodules --branch 0.15.2 https://github.com/getsentry/sentry-native.git /tmp/sn
+            cmake -S /tmp/sn -B /tmp/sn/build -DCMAKE_BUILD_TYPE=Release \
+              -DSENTRY_BACKEND=crashpad -DSENTRY_BUILD_SHARED_LIBS=OFF \
+              -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$HOME/sn-prefix"
+            cmake --build /tmp/sn/build --parallel
+            cmake --install /tmp/sn/build
+            SNDIR=$(dirname "$(find "$HOME/sn-prefix" -name 'sentry-config.cmake' | head -1)")
+            echo "BAT_SENTRY_DSN=${{ vars.BAT_SENTRY_DSN }}" >> "$GITHUB_ENV"
+            echo "BAT_SENTRY_HANDLER=$(find "$HOME/sn-prefix" -name crashpad_handler | head -1)" >> "$GITHUB_ENV"
+            echo "SENTRY_CMAKE_ARGS=-DBAT_SENTRY=ON -Dsentry_DIR=$SNDIR" >> "$GITHUB_ENV"
+            echo "SENTRY_ENABLED=1" >> "$GITHUB_ENV"
+          else
+            echo "SENTRY_ENABLED=0" >> "$GITHUB_ENV"
+          fi
 
       - name: Build
         env:
           BAT_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
           BAT_IGDB_ID: ${{ secrets.IGDB_CLIENT_ID }}
           BAT_IGDB_SECRET: ${{ secrets.IGDB_CLIENT_SECRET }}
+          BAT_SUBDL_KEY: ${{ secrets.BAT_SUBDL_KEY }}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBAT_LIBTORRENT_SOURCE=ON ${SENTRY_CMAKE_ARGS:-}
           cmake --build build
 
       - name: Install to AppDir
         run: |
           DESTDIR=$PWD/AppDir cmake --install build
+          # Ship the Crashpad handler next to the binary inside the AppImage.
+          [ "$SENTRY_ENABLED" = "1" ] && cp "$BAT_SENTRY_HANDLER" AppDir/usr/bin/crashpad_handler || true
+
+          # Bundle the FORK's libtorrent (the one the binary was linked against,
+          # with set_geo_local_fn) into the AppDir so linuxdeploy ships it —
+          # NOT some stray system lib. Mirrors the Windows job's fork-DLL guard.
+          mkdir -p AppDir/usr/lib
+          forkso=$(find build/third_party/libtorrent -maxdepth 1 -name 'libtorrent-rasterbar.so*' | sort | tail -1)
+          if [ -z "$forkso" ]; then
+            echo "::error::fork libtorrent .so missing under build/third_party/libtorrent — the AppImage would crash at launch."
+            exit 1
+          fi
+          cp -a build/third_party/libtorrent/libtorrent-rasterbar.so* AppDir/usr/lib/
+          echo "Bundled fork libtorrent: $(basename "$forkso")"
 
       - name: Resize icon to 256x256
         run: |
@@ -107,12 +154,43 @@ jobs:
           chmod +x linuxdeploy*.AppImage
           export QMAKE=$(which qmake6 2>/dev/null || which qmake)
           export QML_SOURCES_PATHS=$PWD/src/qml
+          # linuxdeploy resolves the binary's libtorrent-rasterbar.so.2.0 soname
+          # via this path — point it at the fork lib (in AppDir + the build dir)
+          # so it never falls back to a stock system libtorrent.
+          export LD_LIBRARY_PATH="$PWD/AppDir/usr/lib:$PWD/build/third_party/libtorrent:$LD_LIBRARY_PATH"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --library AppDir/usr/lib/libtorrent-rasterbar.so.2.0 \
             --plugin qt \
             --desktop-file AppDir/usr/share/applications/batorrent.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/batorrent.png \
             --output appimage
           mv BATorrent-*.AppImage BATorrent-linux-x86_64.AppImage
+
+      # Guard: this exact class of bug (issue #32) must never ship again — the
+      # bundled libtorrent has to export the fork's set_geo_local_fn.
+      - name: Verify fork libtorrent is bundled
+        run: |
+          ./BATorrent-linux-x86_64.AppImage --appimage-extract >/dev/null
+          lib=$(find squashfs-root -name 'libtorrent-rasterbar.so*' | head -1)
+          if [ -z "$lib" ]; then echo "::error::no libtorrent in the AppImage"; exit 1; fi
+          echo "Checking $lib for the fork symbol..."
+          if ! nm -D --defined-only "$lib" 2>/dev/null | grep -q set_geo_local_fn; then
+            echo "::error::bundled libtorrent lacks set_geo_local_fn — stock lib shipped, launch would crash (issue #32)."
+            exit 1
+          fi
+          echo "OK: fork libtorrent bundled (set_geo_local_fn present)."
+          rm -rf squashfs-root
+
+      - name: Upload debug symbols to Sentry
+        if: env.SENTRY_ENABLED == '1' && vars.SENTRY_ORG != '' && vars.SENTRY_PROJECT != ''
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          curl -sL https://sentry.io/get-cli/ | bash
+          sentry-cli debug-files upload build/BATorrent
 
       - name: Upload AppImage
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -124,6 +202,14 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive   # the vendored libtorrent fork
+
+      # Apply our engine patches (fast_ramp + geo-locality) onto the submodule.
+      # git-bash ships on windows-latest, so the same shell script works here.
+      - name: Apply fork patches
+        shell: bash
+        run: ./scripts/apply-fork-patches.sh
 
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
@@ -144,7 +230,11 @@ jobs:
           path: C:\vcpkg\installed
           key: vcpkg-libtorrent-x64-windows-v1
 
-      - name: Install libtorrent via vcpkg
+      # We build libtorrent from our vendored fork source (BAT_LIBTORRENT_SOURCE),
+      # but the vcpkg libtorrent port is still the cleanest way to pull the full
+      # Boost + OpenSSL dependency set into the vcpkg toolchain — our source build
+      # links those. The vcpkg-built libtorrent binary itself goes unused.
+      - name: Install libtorrent deps via vcpkg
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: C:\vcpkg\vcpkg install libtorrent:x64-windows
 
@@ -173,14 +263,35 @@ jobs:
       - name: Convert PNG to multi-resolution ICO
         run: magick src/images/logo1.png -define icon:auto-resize=256,64,48,32,16 src/images/logo1.ico
 
+      # Crash reporting (opt-in, same gate as macOS). sentry-native via vcpkg;
+      # find_package(sentry) resolves through the vcpkg toolchain automatically.
+      - name: Configure Sentry
+        shell: pwsh
+        run: |
+          if ("${{ vars.BAT_SENTRY_DSN }}") {
+            & "$env:VCPKG_ROOT\vcpkg" install sentry-native:x64-windows
+            $handler = (Get-ChildItem -Recurse "$env:VCPKG_ROOT\installed\x64-windows" -Filter crashpad_handler.exe | Select-Object -First 1).FullName
+            "BAT_SENTRY_DSN=${{ vars.BAT_SENTRY_DSN }}" | Out-File $env:GITHUB_ENV -Append
+            "BAT_SENTRY_HANDLER=$handler" | Out-File $env:GITHUB_ENV -Append
+            "SENTRY_CMAKE_ARGS=-DBAT_SENTRY=ON" | Out-File $env:GITHUB_ENV -Append
+            "SENTRY_ENABLED=1" | Out-File $env:GITHUB_ENV -Append
+          } else {
+            "SENTRY_ENABLED=0" | Out-File $env:GITHUB_ENV -Append
+          }
+
       - name: Build
         env:
           BAT_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
           BAT_IGDB_ID: ${{ secrets.IGDB_CLIENT_ID }}
           BAT_IGDB_SECRET: ${{ secrets.IGDB_CLIENT_SECRET }}
+          BAT_SUBDL_KEY: ${{ secrets.BAT_SUBDL_KEY }}
         run: |
+          $sentryArgs = @()
+          if ($env:SENTRY_CMAKE_ARGS) { $sentryArgs = $env:SENTRY_CMAKE_ARGS -split ' ' }
           cmake -B build -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DBAT_LIBTORRENT_SOURCE=ON `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            @sentryArgs
           cmake --build build --config Release
 
       - name: Package
@@ -189,9 +300,74 @@ jobs:
           mkdir release
           Copy-Item build/Release/BATorrent.exe release/
           windeployqt --qmldir src/qml --compiler-runtime release/BATorrent.exe
+          # windeployqt copies the ffmpeg media *plugin* but NOT the ffmpeg DLLs
+          # it links against (av*/sw* live in Qt's bin). Without them the plugin
+          # fails to load and Qt Multimedia silently falls back to Windows Media
+          # Foundation, which can't play MKV/HEVC — the "format isn't supported
+          # by the built-in player" the users hit on the most common movie files.
+          $qtBin = Split-Path (Get-Command windeployqt).Source
+          $ff = Get-ChildItem "$qtBin" -Filter "*.dll" | Where-Object {
+            $_.Name -match '^(avcodec|avformat|avutil|swscale|swresample|avdevice|avfilter)-'
+          }
+          if ($ff.Count -eq 0) { throw "no ffmpeg DLLs in $qtBin — built-in player would fail on MKV/HEVC" }
+          $ff | Copy-Item -Destination release/ -Force
+          Write-Host "Bundled ffmpeg runtime: $($ff.Name -join ', ')"
           $vcpkgBin = "$env:VCPKG_ROOT/installed/x64-windows/bin"
-          Get-ChildItem "$vcpkgBin/*.dll" | Copy-Item -Destination release/
+          # vcpkg's libtorrent is only a vehicle to pull Boost/OpenSSL into the
+          # toolchain — its torrent-rasterbar.dll is a DIFFERENT build from our
+          # vendored fork and must NEVER ship. BATorrent.exe is compiled against
+          # the fork's headers (libtorrent::session_params, …); shipping vcpkg's
+          # DLL makes the loader look for an entry point that build doesn't export
+          # → "entry point not found" crash on launch (issue #20, all of v4.3.0).
+          Get-ChildItem "$vcpkgBin/*.dll" |
+            Where-Object { $_.Name -ne 'torrent-rasterbar.dll' } |
+            Copy-Item -Destination release/
+          # Ship the fork's own libtorrent DLL, from its exact add_subdirectory
+          # output path. A recursive "first match" is WRONG: vcpkg's applocal step
+          # copies its 2.0.11 DLL into build/Release, so the first hit is vcpkg's,
+          # not the fork's 2.0.12 — the exact mismatch that shipped in v4.3.0.
+          # -Force so it wins over any vcpkg copy already in release/.
+          $forkDll = "build/third_party/libtorrent/Release/torrent-rasterbar.dll"
+          if (!(Test-Path $forkDll)) {
+            throw "fork libtorrent DLL missing at $forkDll — BATorrent.exe would crash on launch. Check the libtorrent build output path."
+          }
+          Copy-Item $forkDll -Destination release/ -Force
+          Write-Host "Shipped fork libtorrent: $forkDll"
+          if ($env:SENTRY_ENABLED -eq "1" -and $env:BAT_SENTRY_HANDLER) { Copy-Item "$env:BAT_SENTRY_HANDLER" release/ }
           Compress-Archive -Path release/* -DestinationPath BATorrent-windows-x86_64-portable.zip
+
+      # Nothing before this point ever actually LAUNCHES the built app — a
+      # silent "doesn't open, no error" failure (QML load failure, a DLL
+      # mismatch, ...) has shipped to users twice now (v4.3.0's DLL mismatch;
+      # this build) with every unit test green. Launch the real packaged exe
+      # and fail the build if it doesn't survive — that's the only check that
+      # actually matches "did the app open".
+      - name: Smoke test — the packaged app must actually launch
+        shell: pwsh
+        run: |
+          # Pre-seed lastSeenVersion to an old release so the update-only code
+          # path (What's New / dev-note dialog) gets exercised too — a
+          # fresh-install-only smoke test would miss a bug that only fires on
+          # the upgrade path, which is exactly what real users hit first.
+          New-Item -Path "HKCU:\Software\BATorrent\BATorrent" -Force | Out-Null
+          New-ItemProperty -Path "HKCU:\Software\BATorrent\BATorrent" -Name "lastSeenVersion" -Value "1.0.0" -PropertyType String -Force | Out-Null
+
+          $env:BAT_QML_STRICT = "warn"
+          $outLog = "smoketest_stdout.log"
+          $proc = Start-Process -FilePath "release\BATorrent.exe" -PassThru `
+            -RedirectStandardOutput $outLog -RedirectStandardError "smoketest_stderr.log"
+          Start-Sleep -Seconds 12
+          $stillRunning = -not $proc.HasExited
+          if ($stillRunning) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+
+          Write-Host "----- stdout/stderr -----"
+          Get-Content $outLog, "smoketest_stderr.log" -ErrorAction SilentlyContinue | Write-Host
+
+          if (-not $stillRunning) {
+            Write-Host "::error::BATorrent.exe exited within 12s of launch (exit code $($proc.ExitCode)) — this build would not open for users."
+            exit 1
+          }
+          Write-Host "Smoke test passed: the app was still running after 12s."
 
       - name: Generate installer wizard images
         shell: pwsh
@@ -233,10 +409,45 @@ jobs:
           name: windows-installer
           path: output/BATorrent-setup-x86_64.exe
 
+      # Symbols, matched to this exact build — keep them so Store/Partner Center
+      # crash dumps (and our own CaptureStackBackTrace logs) can be symbolicated.
+      - name: Upload symbols (PDB)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-symbols
+          # Also keep the fork libtorrent's own PDB — a stack that passes through
+          # torrent-rasterbar.dll is unsymbolicated without it (Sentry NATIVE-QT-4/5/B).
+          path: |
+            build/Release/BATorrent.pdb
+            build/third_party/libtorrent/Release/torrent-rasterbar.pdb
+
+      - name: Upload debug symbols to Sentry
+        if: env.SENTRY_ENABLED == '1' && vars.SENTRY_ORG != '' && vars.SENTRY_PROJECT != ''
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          npm install -g @sentry/cli
+          sentry-cli debug-files upload `
+            build/Release/BATorrent.pdb build/Release/BATorrent.exe `
+            build/third_party/libtorrent/Release/torrent-rasterbar.pdb `
+            build/third_party/libtorrent/Release/torrent-rasterbar.dll
+
   build-macos:
-    runs-on: macos-latest
+    # macos-15 (Sequoia) dropped the legacy AGL framework that Qt 6.7 still links
+    # against → "ld: framework 'AGL' not found". Pin to macos-14 (Sonoma) which has it.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive   # the vendored libtorrent fork
+
+      # Apply our engine patches (fast_ramp + geo-locality) onto the submodule.
+      - name: Apply fork patches
+        run: ./scripts/apply-fork-patches.sh
 
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
@@ -261,14 +472,32 @@ jobs:
           brew install libtorrent-rasterbar boost openssl
           brew link --overwrite libtorrent-rasterbar boost openssl
 
+      # Crash reporting is opt-in: only activates when the BAT_SENTRY_DSN repo
+      # variable is set. Without it, the build below is byte-identical to before.
+      - name: Configure Sentry
+        run: |
+          if [ -n "${{ vars.BAT_SENTRY_DSN }}" ]; then
+            brew install sentry-native
+            PREFIX=$(brew --prefix sentry-native)
+            echo "BAT_SENTRY_DSN=${{ vars.BAT_SENTRY_DSN }}" >> "$GITHUB_ENV"
+            echo "BAT_SENTRY_HANDLER=$PREFIX/bin/crashpad_handler" >> "$GITHUB_ENV"
+            echo "SENTRY_CMAKE_ARGS=-DBAT_SENTRY=ON -Dsentry_DIR=$PREFIX/lib/cmake/sentry" >> "$GITHUB_ENV"
+            echo "SENTRY_ENABLED=1" >> "$GITHUB_ENV"
+          else
+            echo "SENTRY_ENABLED=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Build
         env:
           BAT_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
           BAT_IGDB_ID: ${{ secrets.IGDB_CLIENT_ID }}
           BAT_IGDB_SECRET: ${{ secrets.IGDB_CLIENT_SECRET }}
+          BAT_SUBDL_KEY: ${{ secrets.BAT_SUBDL_KEY }}
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix libtorrent-rasterbar);$(brew --prefix openssl)"
+            -DBAT_LIBTORRENT_SOURCE=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix boost);$(brew --prefix openssl)" \
+            ${SENTRY_CMAKE_ARGS:-}
           cmake --build build
 
       - name: Create app bundle
@@ -281,6 +510,8 @@ jobs:
           mkdir -p dmg/BATorrent.app/Contents/MacOS
           mkdir -p dmg/BATorrent.app/Contents/Resources
           cp build/BATorrent.app/Contents/MacOS/BATorrent dmg/BATorrent.app/Contents/MacOS/
+          # Ship the Crashpad handler next to the binary so Sentry finds it.
+          [ "$SENTRY_ENABLED" = "1" ] && cp "$BAT_SENTRY_HANDLER" dmg/BATorrent.app/Contents/MacOS/crashpad_handler || true
           printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
             '<plist version="1.0">' '<dict>' \
@@ -337,6 +568,20 @@ jobs:
           done
           test -f BATorrent-macos-arm64.dmg
 
+      # Symbolicates field crashes. Needs SENTRY_AUTH_TOKEN (secret) + SENTRY_ORG
+      # and SENTRY_PROJECT (repo variables); skipped (non-fatal) if any is absent.
+      - name: Upload debug symbols to Sentry
+        if: env.SENTRY_ENABLED == '1' && vars.SENTRY_ORG != '' && vars.SENTRY_PROJECT != ''
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          curl -sL https://sentry.io/get-cli/ | bash
+          dsymutil build/BATorrent.app/Contents/MacOS/BATorrent -o BATorrent.dSYM || true
+          sentry-cli debug-files upload --include-sources \
+            BATorrent.dSYM build/BATorrent.app/Contents/MacOS/BATorrent || true
+
       - name: Upload DMG
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -387,6 +632,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          # a hyphenated tag (v4.7.0-rc1) is a pre-release: it does NOT become
+          # "latest", so the in-app updater (which reads /releases/latest) never
+          # offers it to normal users — only manual beta testers grab it.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
           files: |
             linux-build/BATorrent-linux-x86_64.AppImage
             linux-build/BATorrent-linux-x86_64.AppImage.torrent
@@ -405,6 +655,7 @@ jobs:
       # publishes. The MSIX artifact still needs manual upload to Partner
       # Center, but at least the build is ready without a separate dispatch.
       - name: Trigger Store MSIX build
+        if: ${{ !contains(github.ref_name, '-') }}   # never publish a pre-release to the Store
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -413,6 +664,7 @@ jobs:
           gh workflow run store.yml -f version="${VERSION}.0"
 
       - name: Update Homebrew tap
+        if: ${{ !contains(github.ref_name, '-') }}   # never point the tap at a pre-release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -19,12 +19,12 @@
 #include <QElapsedTimer>
 #include <QTest>
 
-#include "app/utils.h"
+#include "services/platform/utils.h"
 #include "torrent/types.h"
 #include "torrent/sessionmanager.h"
 #include "webui/webserver.h"
-#include "app/translator.h"
-#include "app/updater.h"
+#include "services/platform/translator.h"
+#include "services/integrations/updater.h"
 
 using Catch::Approx;
 using Catch::Matchers::ContainsSubstring;
@@ -691,6 +691,11 @@ TEST_CASE("WebServer: POST magnet without savePath uses default", "[integration]
     REQUIRE((r.contains("200") || r.contains("400")));
 
     server.stop();
+
+    // addMagnet persists the magnet's .resume at add time (crash-safety) —
+    // wipe it so later fresh-session tests really start empty.
+    QDir(QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+             .filePath("resume")).removeRecursively();
 }
 
 // ============================================================================
@@ -874,6 +879,9 @@ TEST_CASE("WebServer: /api/status JSON schema", "[integration][webserver]")
 TEST_CASE("WebServer: /api/torrents JSON schema (empty)", "[integration][webserver]")
 {
     app();
+    // belt and braces: this schema test's whole premise is an empty session
+    QDir(QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+             .filePath("resume")).removeRecursively();
     SessionManager session;
     WebServer server(&session);
     REQUIRE(server.start(18411, false));
@@ -952,7 +960,7 @@ TEST_CASE("SessionManager: torrentsUpdated signal fires", "[integration][signals
 //  STATS HISTORY (daily usage collector — Wrapped seed)
 // ============================================================================
 
-#include "app/statshistory.h"
+#include "services/platform/statshistory.h"
 #include <QTemporaryDir>
 #include <QDate>
 
@@ -1018,7 +1026,7 @@ TEST_CASE("StatsHistory: negative deltas are clamped", "[stats]")
 //  SUBTITLE PARSER (external .srt/.vtt for the built-in player)
 // ============================================================================
 
-#include "app/subtitleparser.h"
+#include "services/subtitles/subtitleparser.h"
 
 TEST_CASE("SubtitleParser: basic SRT with CRLF, index lines and italics", "[subs]")
 {
@@ -1081,7 +1089,7 @@ TEST_CASE("SubtitleParser: Latin-1 fallback for unlabeled Windows files", "[subs
 //  SUBTITLE SEARCH (network integration — Gestdown, keyless)
 // ============================================================================
 
-#include "app/subtitlesearch.h"
+#include "services/subtitles/subtitlesearch.h"
 
 TEST_CASE("SubtitleSearch: Gestdown end-to-end for a known series episode", "[integration][subs-net]")
 {
@@ -1197,3 +1205,306 @@ TEST_CASE("QFile::moveToTrash works in this environment", "[trash-env]")
     REQUIRE(!QFileInfo::exists(p));
 }
 #endif
+
+// ============================================================================
+//  ArchiveScan — auto-extract archive discovery (formats + multi-part)
+// ============================================================================
+#include "services/security/archivescan.h"
+
+TEST_CASE("ArchiveScan: plain single archives of every format", "[archive]") {
+    for (const QString &n : {"movie.rar","data.zip","stuff.7z","pack.tar.gz",
+                             "pack.tgz","pack.tar.bz2","pack.tar.xz","blob.gz","blob.xz"}) {
+        REQUIRE(ArchiveScan::isArchive(n));
+        REQUIRE(ArchiveScan::archivesToExtract({n}) == QStringList{n});
+    }
+    REQUIRE(ArchiveScan::archivesToExtract({"film.mkv","cover.jpg"}).isEmpty());
+}
+
+TEST_CASE("ArchiveScan: .partN.rar keeps only the first volume", "[archive]") {
+    QStringList files = {"rls.part1.rar","rls.part2.rar","rls.part3.rar"};
+    REQUIRE(ArchiveScan::archivesToExtract(files) == QStringList{"rls.part1.rar"});
+    // zero-padded variant
+    QStringList padded = {"rls.part01.rar","rls.part02.rar","rls.part10.rar"};
+    REQUIRE(ArchiveScan::archivesToExtract(padded) == QStringList{"rls.part01.rar"});
+    REQUIRE(ArchiveScan::isContinuationPart("rls.part02.rar"));
+    REQUIRE_FALSE(ArchiveScan::isContinuationPart("rls.part01.rar"));
+}
+
+TEST_CASE("ArchiveScan: old .rNN rar split keeps the .rar, drops .r00..", "[archive]") {
+    QStringList files = {"rls.rar","rls.r00","rls.r01","rls.r02"};
+    REQUIRE(ArchiveScan::archivesToExtract(files) == QStringList{"rls.rar"});
+    REQUIRE(ArchiveScan::isContinuationPart("rls.r00"));
+}
+
+TEST_CASE("ArchiveScan: generic .NNN split keeps .001 only", "[archive]") {
+    QStringList files = {"big.7z.001","big.7z.002","big.7z.003"};
+    REQUIRE(ArchiveScan::archivesToExtract(files) == QStringList{"big.7z.001"});
+    REQUIRE(ArchiveScan::isContinuationPart("big.7z.002"));
+    REQUIRE_FALSE(ArchiveScan::isContinuationPart("big.7z.001"));
+}
+
+TEST_CASE("ArchiveScan: split-zip .zNN volumes drop, .zip stays", "[archive]") {
+    QStringList files = {"set.zip","set.z01","set.z02"};
+    REQUIRE(ArchiveScan::archivesToExtract(files) == QStringList{"set.zip"});
+    REQUIRE(ArchiveScan::isContinuationPart("set.z01"));
+}
+
+TEST_CASE("ArchiveScan: case-insensitive and mixed folder", "[archive]") {
+    QStringList files = {"MOVIE.MKV","Bonus.RAR","Bonus.R00","Readme.txt","clip.001","clip.002"};
+    auto out = ArchiveScan::archivesToExtract(files);
+    REQUIRE(out.contains("Bonus.RAR"));
+    REQUIRE(out.contains("clip.001"));
+    REQUIRE_FALSE(out.contains("Bonus.R00"));
+    REQUIRE_FALSE(out.contains("clip.002"));
+    REQUIRE_FALSE(out.contains("MOVIE.MKV"));
+    REQUIRE(out.size() == 2);
+}
+
+TEST_CASE("ArchiveScan: a media file that looks like a part is not an archive", "[archive]") {
+    // ".part1.mkv" must NOT be treated as a rar volume
+    REQUIRE_FALSE(ArchiveScan::isArchive("episode.part1.mkv"));
+    REQUIRE(ArchiveScan::archivesToExtract({"episode.part1.mkv"}).isEmpty());
+}
+
+// ============================================================================
+//  ReleasePick — one-click "best release" auto-pick
+// ============================================================================
+#include "services/metadata/releasepick.h"
+using ReleasePick::Candidate;
+static const qint64 GB_ = 1024LL * 1024 * 1024;
+
+TEST_CASE("ReleasePick: dead releases (0 seeders) are never chosen", "[release]") {
+    QList<Candidate> c = {
+        {"1080p", true, 0, 8 * GB_},   // perfect but dead
+        {"720p",  false, 5, 2 * GB_},
+    };
+    REQUIRE(ReleasePick::best(c, "1080p", 0) == 1);
+}
+
+TEST_CASE("ReleasePick: honors preferred quality over more seeders", "[release]") {
+    QList<Candidate> c = {
+        {"4K",    false, 500, 40 * GB_},
+        {"1080p", false, 50,  8 * GB_},
+    };
+    REQUIRE(ReleasePick::best(c, "1080p", 0) == 1);   // wants 1080p even with fewer seeders
+    REQUIRE(ReleasePick::best(c, "4K", 0) == 0);
+}
+
+TEST_CASE("ReleasePick: native language breaks ties within a tier", "[release]") {
+    QList<Candidate> c = {
+        {"1080p", false, 200, 8 * GB_},
+        {"1080p", true,  50,  8 * GB_},   // fewer seeders but native
+    };
+    REQUIRE(ReleasePick::best(c, "1080p", 0) == 1);
+}
+
+TEST_CASE("ReleasePick: native language wins over higher quality (viewer default)", "[release]") {
+    QList<Candidate> c = {
+        {"4K",    false, 800, 40 * GB_},  // best quality + seeders, but not your language
+        {"720p",  true,  20,  3 * GB_},   // your language, lower quality
+    };
+    REQUIRE(ReleasePick::best(c, "1080p", 0, true) == 1);   // preferNative → language first
+    REQUIRE(ReleasePick::best(c, "1080p", 0, false) == 0);  // quality-first mode → 4K
+}
+
+TEST_CASE("ReleasePick: seeders break ties when quality and native equal", "[release]") {
+    QList<Candidate> c = {
+        {"1080p", false, 30,  8 * GB_},
+        {"1080p", false, 120, 8 * GB_},
+    };
+    REQUIRE(ReleasePick::best(c, "1080p", 0) == 1);
+}
+
+TEST_CASE("ReleasePick: size cap excludes huge releases when a smaller one fits", "[release]") {
+    QList<Candidate> c = {
+        {"4K",    false, 500, 40 * GB_},
+        {"1080p", false, 80,  6 * GB_},
+    };
+    REQUIRE(ReleasePick::best(c, "4K", 10 * GB_) == 1);   // 4K too big → fall to the one under cap
+}
+
+TEST_CASE("ReleasePick: size cap ignored if nothing fits", "[release]") {
+    QList<Candidate> c = {
+        {"4K",    false, 500, 40 * GB_},
+        {"1080p", false, 80,  20 * GB_},
+    };
+    REQUIRE(ReleasePick::best(c, "1080p", 5 * GB_) != -1);   // nothing under 5GB → still pick something alive
+}
+
+TEST_CASE("ReleasePick: Auto prefers 1080p sweet spot", "[release]") {
+    QList<Candidate> c = {
+        {"480p",  false, 999, 1 * GB_},
+        {"1080p", false, 10,  8 * GB_},
+        {"4K",    false, 100, 40 * GB_},
+    };
+    REQUIRE(ReleasePick::best(c, "Auto", 0) == 1);
+}
+
+TEST_CASE("ReleasePick: empty list returns -1", "[release]") {
+    REQUIRE(ReleasePick::best({}, "1080p", 0) == -1);
+}
+
+// ---- InstallerProfile: engine detection + silent recipes -------------------
+#include "services/integrations/installerprofile.h"
+using IP = InstallerProfile::Engine;
+
+TEST_CASE("InstallerProfile: detects Inno Setup by magic at 0x30", "[installer]") {
+    QByteArray b(0x40, '\0');
+    b.replace(0x30, 4, QByteArray("Inno"));
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::InnoSetup);
+}
+
+TEST_CASE("InstallerProfile: detects Inno by data-section marker", "[installer]") {
+    QByteArray b = QByteArray("MZ") + QByteArray(200, '\0') + QByteArray("Inno Setup Setup Data (6.2.0)");
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::InnoSetup);
+}
+
+TEST_CASE("InstallerProfile: detects NSIS by DEADBEEF+NullsoftInst", "[installer]") {
+    QByteArray b = QByteArray("\xEF\xBE\xAD\xDE", 4) + QByteArray("NullsoftInst");
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::Nsis);
+}
+
+TEST_CASE("InstallerProfile: detects InstallShield by stream marker", "[installer]") {
+    QByteArray b = QByteArray("MZ") + QByteArray(0x40, '\0') + QByteArray("ISSetupStream");
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::InstallShield);
+}
+
+TEST_CASE("InstallerProfile: detects MSI/OLE compound magic", "[installer]") {
+    QByteArray b = QByteArray("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8) + QByteArray(64, '\0');
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::Msi);
+}
+
+TEST_CASE("InstallerProfile: detects WinRAR SFX (PE + Rar!)", "[installer]") {
+    QByteArray b = QByteArray("MZ") + QByteArray(0x40, '\0') + QByteArray("Rar!\x1A\x07", 6);
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::WinRarSfx);
+}
+
+TEST_CASE("InstallerProfile: an appended archive without a PE is not an SFX", "[installer]") {
+    QByteArray b = QByteArray("PK\x03\x04", 4) + QByteArray("Rar!\x1A\x07", 6);  // no MZ
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::Unknown);
+}
+
+TEST_CASE("InstallerProfile: plain bytes are Unknown", "[installer]") {
+    QByteArray b = QByteArray("MZ") + QByteArray(128, '\0') + QByteArray("just a normal program");
+    REQUIRE(InstallerProfile::detectEngineFromBytes(b) == IP::Unknown);
+}
+
+TEST_CASE("InstallerProfile: NSIS silent invocation keeps /D= raw and last", "[installer]") {
+    auto si = InstallerProfile::silentInvocation(IP::Nsis, "setup.exe", "C:/Games/Foo");
+    REQUIRE(si.supported);
+    REQUIRE(si.args == QStringList{ "/S" });
+    REQUIRE(si.rawTail == QString("/D=C:/Games/Foo"));   // never quoted, appended verbatim
+}
+
+TEST_CASE("InstallerProfile: Inno silent invocation passes /DIR=", "[installer]") {
+    auto si = InstallerProfile::silentInvocation(IP::InnoSetup, "setup.exe", "C:/Games/Foo");
+    REQUIRE(si.supported);
+    REQUIRE(si.args.contains("/VERYSILENT"));
+    REQUIRE(si.args.contains("/DIR=C:/Games/Foo"));
+    REQUIRE(si.rawTail.isEmpty());
+}
+
+TEST_CASE("InstallerProfile: MSI is driven through msiexec", "[installer]") {
+    auto si = InstallerProfile::silentInvocation(IP::Msi, "game.msi", "C:/Games/Foo");
+    REQUIRE(si.supported);
+    REQUIRE(si.program == QString("msiexec"));
+    REQUIRE(si.args.contains("game.msi"));
+    REQUIRE(si.args.contains("/qn"));
+}
+
+TEST_CASE("InstallerProfile: unknown engine is not silently runnable", "[installer]") {
+    auto si = InstallerProfile::silentInvocation(IP::Unknown, "setup.exe", "C:/Games/Foo");
+    REQUIRE_FALSE(si.supported);
+}
+
+TEST_CASE("InstallerProfile: tiers — silenceable engines vs guided", "[installer]") {
+    REQUIRE(InstallerProfile::tierForEngine(IP::InnoSetup) == InstallerProfile::Tier::SilentB);
+    REQUIRE(InstallerProfile::tierForEngine(IP::Nsis)      == InstallerProfile::Tier::SilentB);
+    REQUIRE(InstallerProfile::tierForEngine(IP::Unknown)   == InstallerProfile::Tier::GuidedC);
+}
+
+TEST_CASE("InstallerProfile: FitGirl/DODI repacks flagged for guided install", "[installer]") {
+    REQUIRE(InstallerProfile::isLikelyRepack("fitgirl-setup.exe", {}));
+    REQUIRE(InstallerProfile::isLikelyRepack("setup.exe", { "setup-1.bin", "setup-2.bin" }));
+    REQUIRE(InstallerProfile::isLikelyRepack("setup.exe", { "data.arc" }));
+    REQUIRE_FALSE(InstallerProfile::isLikelyRepack("setup.exe", { "game.exe", "data.pak" }));
+}
+
+TEST_CASE("InstallerProfile: scene crack folder detection", "[installer]") {
+    REQUIRE(InstallerProfile::crackDir({ "Game", "CODEX" }) == QString("CODEX"));
+    REQUIRE(InstallerProfile::crackDir({ "data", "Crack" }) == QString("Crack"));
+    REQUIRE(InstallerProfile::crackDir({ "bin", "PLAZA", "redist" }) == QString("PLAZA"));
+    REQUIRE(InstallerProfile::crackDir({ "bin", "data", "assets" }).isEmpty());
+}
+
+// ============================================================================
+//  ADDON MANAGER — Torrentio language configuration
+// ============================================================================
+
+#include "services/discovery/addonmanager.h"
+
+TEST_CASE("AddonManager: Torrentio language injection", "[addons]") {
+    // unconfigured Torrentio + a language → config segment injected
+    REQUIRE(AddonManager::streamBaseUrl("https://torrentio.strem.fun", "portuguese")
+            == QString("https://torrentio.strem.fun/language=portuguese"));
+    // no language priority → untouched
+    REQUIRE(AddonManager::streamBaseUrl("https://torrentio.strem.fun", QString())
+            == QString("https://torrentio.strem.fun"));
+    // user already configured the addon by hand → never double-configure
+    REQUIRE(AddonManager::streamBaseUrl(
+                "https://torrentio.strem.fun/providers=yts%7Clanguage=spanish", "portuguese")
+            == QString("https://torrentio.strem.fun/providers=yts%7Clanguage=spanish"));
+    // non-Torrentio stream addons are never rewritten
+    REQUIRE(AddonManager::streamBaseUrl("https://my.custom.addon/sub", "portuguese")
+            == QString("https://my.custom.addon/sub"));
+}
+
+// ============================================================================
+//  AUDIO MODE — dub / sub / original relative to the user's language
+// ============================================================================
+
+#include "services/metadata/audiomode.h"
+
+TEST_CASE("AudioMode: Portuguese dub vs sub vs original", "[audiomode]") {
+    using namespace AudioMode;
+    // dubbed audio
+    REQUIRE(classify("Filme.2024.1080p.Dublado.WEB-DL.mp4", "PT") == Dubbed);
+    REQUIRE(classify("Serie 2024 Nacional 720p", "PT") == Dubbed);
+    REQUIRE(classify("Interstelar 2014 Dual Audio 5.1 BLUDV", "PT") == Dubbed);
+    // subtitled only (original audio)
+    REQUIRE(classify("Movie.2024.1080p.WEB-DL.Legendado.mkv", "PT") == Subbed);
+    REQUIRE(classify("Movie 2024 LEG PT 1080p", "PT") == Subbed);
+    // neither → original
+    REQUIRE(classify("Movie.2024.1080p.BluRay.x265-GROUP", "PT") == Original);
+}
+
+TEST_CASE("AudioMode: dub wins when both dub and sub markers present", "[audiomode]") {
+    using namespace AudioMode;
+    // a dual-audio release that also lists subs still gives you the dub
+    REQUIRE(classify("Filme 2024 Dual Audio Legendado 1080p", "PT") == Dubbed);
+}
+
+TEST_CASE("AudioMode: classification is relative to the user's language", "[audiomode]") {
+    using namespace AudioMode;
+    // "Dublado PT-BR" is a dub for a PT user, but nothing to a FR user
+    REQUIRE(classify("Filme.2024.Dublado.PT-BR.1080p", "PT") == Dubbed);
+    REQUIRE(classify("Filme.2024.Dublado.PT-BR.1080p", "FR") == Original);
+    // VOSTFR = original audio + French subs: sub for FR, original for PT
+    REQUIRE(classify("Film.2024.VOSTFR.1080p.WEB", "FR") == Subbed);
+    REQUIRE(classify("Film.2024.VOSTFR.1080p.WEB", "PT") == Original);
+    // TRUEFRENCH = French dub
+    REQUIRE(classify("Film.2024.TRUEFRENCH.1080p.BluRay", "FR") == Dubbed);
+}
+
+TEST_CASE("AudioMode: English and unknown languages have no dub/sub axis", "[audiomode]") {
+    using namespace AudioMode;
+    REQUIRE(classify("Movie.2024.Dublado.1080p", "EN") == Original);
+    REQUIRE(classify("Movie.2024.Dublado.1080p", "") == Original);
+    REQUIRE(classify("Movie.2024.Dublado.1080p", "KO") == Original);   // no table
+}
+
+TEST_CASE("AudioMode: key strings are stable", "[audiomode]") {
+    REQUIRE(AudioMode::key(AudioMode::Dubbed) == "dub");
+    REQUIRE(AudioMode::key(AudioMode::Subbed) == "sub");
+    REQUIRE(AudioMode::key(AudioMode::Original) == "original");
+}

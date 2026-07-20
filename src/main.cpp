@@ -26,21 +26,39 @@
 #include <QDesktopServices>
 #include <QProcess>
 #include <QDir>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QUrl>
-#include "app/metadataresolver.h"
-#include "app/discoveryservice.h"
-#include "app/translator.h"
-#include "gui/qmlposterbridge.h"
+#include <cstdlib>
+#ifdef BAT_HAVE_SENTRY
+#include <sentry.h>
+#endif
+#include "services/metadata/metadataresolver.h"
+#include "services/discovery/discoveryservice.h"
+#include "services/platform/translator.h"
+#include "bridges/qmlposterbridge.h"
 #include "webui/streamserver.h"
-#include "app/gamesourcemanager.h"
-#include "app/rssmanager.h"
-#include "app/addonmanager.h"
-#include "app/notifier.h"
+#include "services/discovery/gamesourcemanager.h"
+#include "services/integrations/rssmanager.h"
+#include "services/discovery/addonmanager.h"
+#include "services/integrations/notifier.h"
 #include "torrent/sessionmanager.h"
-#include "app/secretstore.h"
-#include "app/logger.h"
-#include "app/utils.h"
+#include "services/downloads/httpdownloadmanager.h"
+#include "services/downloads/httpmergeengine.h"
+#include "ipc/enginehost.h"
+#include "ipc/ipcengine.h"
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <cstring>
+#include <QThread>
+#include "services/security/secretstore.h"
+#include "services/integrations/debridmanager.h"
+#include "services/platform/logger.h"
+#include "services/security/crashhandler.h"
+#include "services/platform/utils.h"
+
+#include <libtorrent/version.hpp>
 
 // Serves the app logo recolored for the OS scheme to QML (the system tray
 // icon.source wants a URL, not a QIcon). URL id is "light"/"dark"; the body
@@ -66,7 +84,7 @@ static QString collectArgs(const QStringList &args)
     QStringList relevant;
     for (int i = 1; i < args.size(); ++i) {
         const QString &a = args[i];
-        if (a.endsWith(".torrent") || a.startsWith("magnet:"))
+        if (a.endsWith(".torrent") || a.startsWith("magnet:") || a.startsWith("bittorrent:"))
             relevant << a;
     }
     return relevant.join('\n');
@@ -83,6 +101,62 @@ static bool sendToRunningInstance(const QString &message)
     socket.disconnectFromServer();
     return true;
 }
+
+// A QML/JS runtime diagnostic (vs a generic Qt warning): carries a .qml/qrc
+// source location AND an error phrase. These are the silent broken-binding /
+// TypeError messages that keep running until they cascade into a crash.
+static bool isQmlError(const QString &m)
+{
+    if (!m.contains(QLatin1String(".qml:")) && !m.contains(QLatin1String("qrc:")))
+        return false;
+    static const char *markers[] = {
+        "TypeError", "ReferenceError", "is not a function", "is not defined",
+        "Cannot read property", "Unable to assign", "Cannot assign",
+        "Binding loop detected", "Error:"
+    };
+    for (const char *mk : markers)
+        if (m.contains(QLatin1String(mk))) return true;
+    return false;
+}
+
+#ifdef BAT_HAVE_SENTRY
+// Bring up Crashpad before anything heavy runs, so a crash from the very first
+// torrent/QML interaction is captured. No-op without a compiled-in DSN.
+static void initSentry(const QString &role)
+{
+    sentry_options_t *o = sentry_options_new();
+#ifdef BAT_SENTRY_DSN
+    sentry_options_set_dsn(o, BAT_SENTRY_DSN);
+#endif
+    // Prefer the crashpad_handler shipped next to the executable (the packaged
+    // case); fall back to the build-time path (local dev against brew).
+    {
+        QString handler = QCoreApplication::applicationDirPath()
+                          + QStringLiteral("/crashpad_handler");
+#ifdef Q_OS_WIN
+        handler += QStringLiteral(".exe");
+#endif
+#ifdef BAT_SENTRY_HANDLER
+        if (!QFileInfo::exists(handler)) handler = QStringLiteral(BAT_SENTRY_HANDLER);
+#endif
+        if (QFileInfo::exists(handler))
+            sentry_options_set_handler_path(o, handler.toUtf8().constData());
+    }
+    const QString db = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                       + QStringLiteral("/sentry-") + role;
+    sentry_options_set_database_path(o, db.toUtf8().constData());
+    sentry_options_set_release(o, "batorrent@" APP_VERSION);
+#ifdef QT_DEBUG
+    sentry_options_set_environment(o, "development");
+#else
+    sentry_options_set_environment(o, "production");
+#endif
+    if (qEnvironmentVariableIsSet("BAT_SENTRY_TEST"))
+        sentry_options_set_debug(o, 1);   // verbose transport logs for local validation
+    sentry_init(o);
+    qAddPostRoutine([]{ sentry_close(); });
+}
+#endif
 
 // Maps Qt's runtime log categories (QtDebugMsg / QtInfoMsg / etc) to our
 // internal Logger levels so every existing qDebug() / qWarning() in the
@@ -104,10 +178,67 @@ static void qtMessageHandler(QtMsgType type, const QMessageLogContext &ctx,
     Logger::instance().log(lvl, prefix + msg);
     // Keep stderr live for `--debug` console use.
     fprintf(stderr, "%s\n", qPrintable(prefix + msg));
+
+    // Dev-only: stop QML runtime errors from hiding in the log until they
+    // cascade into a crash. BAT_QML_STRICT=warn prints a loud banner; =fatal
+    // aborts at the broken binding so a debugger / the crash handler catches it.
+    // Unset in production → zero effect.
+    static const QByteArray qmlStrict = qgetenv("BAT_QML_STRICT");
+    if (!qmlStrict.isEmpty() && type == QtWarningMsg && isQmlError(msg)) {
+        fprintf(stderr, "\n‼️  [QML ERROR] %s\n\n", qPrintable(msg));
+        if (qmlStrict == "fatal") { fflush(stderr); abort(); }
+    }
 }
 
 int main(int argc, char *argv[])
 {
+    // --- engine/UI split (internal/ENGINE_SPLIT_PLAN.md) ---
+    // These branch before QApplication so the engine child stays headless.
+    for (int i = 1; i < argc; ++i) {
+        // Engine child: headless host of the libtorrent session over a local socket.
+        if (std::strcmp(argv[i], "--engine") == 0 && i + 1 < argc) {
+            QCoreApplication eapp(argc, argv);
+            eapp.setOrganizationName("BATorrent");
+            eapp.setApplicationName("BATorrent");
+            eapp.setApplicationVersion(APP_VERSION);
+            Logger::instance().init();
+#ifdef BAT_HAVE_SENTRY
+            initSentry(QStringLiteral("engine"));   // the split's whole point: report engine crashes
+#endif
+            SessionManager session;   // loadResumeData() runs in the ctor
+            EngineHost host(&session, QString::fromLocal8Bit(argv[i + 1]));
+            if (!host.listen()) return 1;
+            return eapp.exec();
+        }
+        // Proof-of-life: spawn our own binary as the engine, round-trip a few
+        // calls, exit. Validates the channel + process supervision end-to-end.
+        if (std::strcmp(argv[i], "--engine-selftest") == 0) {
+            QCoreApplication eapp(argc, argv);
+            eapp.setOrganizationName("BATorrent");
+            eapp.setApplicationName("BATorrent");
+            Logger::instance().init();
+            IpcEngine engine(QCoreApplication::applicationFilePath());
+            QObject::connect(&engine, &IpcEngine::engineStatusChanged, [](bool up) {
+                qInfo() << "[selftest] engine status:" << (up ? "UP" : "DOWN");
+            });
+            if (!engine.start()) { qWarning() << "[selftest] engine failed to start"; return 1; }
+            // Pump events ~3s so the engine finishes loading resume data and
+            // pushes a full snapshot; reads are served from it (no blocking).
+            QElapsedTimer pump; pump.start();
+            while (pump.elapsed() < 3000) eapp.processEvents(QEventLoop::AllEvents, 100);
+            qInfo() << "[selftest] connected. snapshot torrentCount =" << engine.torrentCount();
+            if (engine.torrentCount() > 0) {
+                const TorrentInfo t = engine.torrentAt(0);
+                qInfo() << "[selftest] torrentAt(0):" << t.name << "progress" << t.progress
+                        << "hash" << engine.torrentHashAt(0);
+                qInfo() << "[selftest] filesAt(0) count =" << int(engine.filesAt(0).size());
+            }
+            qInfo() << "[selftest] pauseAll()"; engine.pauseAll();
+            qInfo() << "[selftest] round-trip OK";
+            return 0;
+        }
+    }
+
     QApplication app(argc, argv);
     // Set the org name so default-constructed QSettings() resolves to the same
     // store as the explicit QSettings("BATorrent","BATorrent") used elsewhere —
@@ -127,6 +258,17 @@ int main(int argc, char *argv[])
     const bool debugFlag = app.arguments().contains("--debug")
                         || app.arguments().contains("-d");
     Logger::instance().init();
+    // Capture a backtrace on a fatal crash (the MS-Store crashes have no repro on
+    // the dev box). Installed right after the log is up so startup crashes count too.
+    CrashHandler::install(
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/crashes",
+        APP_VERSION);
+#ifdef BAT_HAVE_SENTRY
+    initSentry(QStringLiteral("ui"));   // field crash reporting (release builds)
+    if (qEnvironmentVariableIsSet("BAT_SENTRY_TEST"))
+        sentry_capture_event(sentry_value_new_message_event(
+            SENTRY_LEVEL_INFO, "custom", "BATorrent sentry test event"));
+#endif
     if (debugFlag) {
         Logger::instance().setLevel(Logger::Trace);
         // Make Qt dump the scene-graph/RHI init (which GPU backend it picked and
@@ -145,6 +287,15 @@ int main(int argc, char *argv[])
     SecretStore::instance().migrateFromSettings({
         "proxyPass", "plexToken", "jellyfinApiKey"
     });
+
+    // One-time migration: "autoShutdown" (bool) -> "postDownloadAction" (index,
+    // 6 = shut down). A user who had it on keeps getting a shutdown, not
+    // silently nothing, once the setting becomes a multi-action picker.
+    {
+        QSettings st;
+        if (!st.contains("postDownloadAction") && st.value("autoShutdown", false).toBool())
+            st.setValue("postDownloadAction", 6);
+    }
 
     // webUiPasswordHash used to live in the keychain, but on unsigned macOS
     // builds reading it at every cold start pops a login-keychain prompt. It's
@@ -209,6 +360,26 @@ int main(int argc, char *argv[])
         }
     }
 
+    // --- engine ABI guard: a portable update can swap the exe while a stale
+    // process still holds the old torrent-rasterbar DLL, leaving a version-skewed
+    // install that dies as an access violation inside session construction
+    // (the Sentry NATIVE-QT-4 / GetProcAddress signature). lt::version() comes
+    // from the DLL, LIBTORRENT_VERSION from our headers — skew → clear dialog.
+    if (!QString::fromLatin1(lt::version()).startsWith(QStringLiteral(LIBTORRENT_VERSION))) {
+        QMessageBox box;
+        box.setIcon(QMessageBox::Critical);
+        box.setWindowTitle("BATorrent — Recovery");
+        box.setText("This installation is broken: the torrent engine on disk is from a different version.");
+        box.setInformativeText("This usually happens when an update is interrupted. Please download the latest version again.");
+        QPushButton *dlBtn = box.addButton("Download latest", QMessageBox::AcceptRole);
+        box.addButton("Quit", QMessageBox::RejectRole);
+        box.setDefaultButton(dlBtn);
+        box.exec();
+        if (box.clickedButton() == dlBtn)
+            QDesktopServices::openUrl(QUrl("https://github.com/BATorrent-app/BATorrent/releases/latest"));
+        return 1;
+    }
+
     // Load Inter font family
     QFontDatabase::addApplicationFont(":/fonts/Inter-Regular.ttf");
     QFontDatabase::addApplicationFont(":/fonts/Inter-Medium.ttf");
@@ -227,26 +398,58 @@ int main(int argc, char *argv[])
     QQuickStyle::setStyle("Basic");
     {
 
-        SessionManager session;
+        // Engine selection (internal/ENGINE_SPLIT_PLAN.md). Opt-in: when
+        // engineMode == "ipc" the libtorrent session runs in a separate child
+        // process so an engine crash can't take the UI down; otherwise it runs
+        // in-process as before. The UI talks only to IEngine* either way.
+        SessionManager *localSession = nullptr;   // non-null only in in-process mode
+        IpcEngine *ipcEngine = nullptr;
+        {
+            const bool wantIpc = QSettings().value(QStringLiteral("engineMode")).toString()
+                                 == QLatin1String("ipc");
+            if (wantIpc) {
+                ipcEngine = new IpcEngine(QCoreApplication::applicationFilePath(), &app);
+                if (!ipcEngine->start()) {
+                    qWarning() << "[engine] IPC engine failed to start — falling back to in-process";
+                    ipcEngine->deleteLater();
+                    ipcEngine = nullptr;
+                } else {
+                    qInfo() << "[engine] running split (engine in child process)";
+                }
+            }
+            if (!ipcEngine) localSession = new SessionManager(&app);
+        }
+        IEngine *baseEng = localSession ? static_cast<IEngine *>(localSession)
+                                        : static_cast<IEngine *>(ipcEngine);
+        // Direct-HTTP downloads (file-host links, "Download from link") ride the
+        // same Downloads UI by presenting as extra IEngine rows — the merge
+        // decorator wraps the real engine so nothing downstream changes.
+        auto *httpDownloads = new HttpDownloadManager(&app);
+        IEngine *eng = new HttpMergeEngine(baseEng, httpDownloads, &app);
 
         auto *resolver = new MetadataResolver(&app);
-        auto *posterModel = new QmlPosterModel(&session, resolver, &app);
+        auto *posterModel = new QmlPosterModel(eng, resolver, &app);
         auto *themeBridge = new QmlThemeBridge(&app);
-        auto *sessionBridge = new QmlSessionBridge(&session, resolver, &app);
+        auto *sessionBridge = new QmlSessionBridge(eng, resolver, &app);
+        sessionBridge->setHttpDownloads(httpDownloads);
+        httpDownloads->setDefaultDir(sessionBridge->defaultSavePath());
         // Local stream server for the embedded player (4.0 step ④).
-        auto *streamServer = new StreamServer(&session, &app);
+        auto *streamServer = new StreamServer(eng, &app);
         if (streamServer->start()) {
             sessionBridge->setStreamPort(streamServer->port());
             qInfo() << "[stream] listening on 127.0.0.1:" << streamServer->port();
         } else {
             qWarning() << "[stream] failed to start local stream server";
         }
-        RssManager::instance().setSession(&session, sessionBridge->defaultSavePath());
+        RssManager::instance().setSession(eng, sessionBridge->defaultSavePath());
         auto *rssBridge = new QmlRssBridge(&app);
-        auto *settingsBridge = new QmlSettingsBridge(&session, &app);
+        // Settings/WebUI stay on the in-process session (config control plane);
+        // null in IPC mode, where the bridge falls back to QSettings.
+        auto *settingsBridge = new QmlSettingsBridge(localSession, eng, &app);
         auto *addonBridge = new QmlAddonBridge(&app);
-        auto *searchBridge = new QmlSearchBridge(&session, &app);
+        auto *searchBridge = new QmlSearchBridge(eng, &app);
         searchBridge->setResolver(resolver);
+        searchBridge->setHttpDownloads(httpDownloads);
         auto *discoveryService = new DiscoveryService(&app);
         searchBridge->setDiscovery(discoveryService);
 
@@ -266,32 +469,50 @@ int main(int argc, char *argv[])
         }
 #endif
         auto *logBridge = new QmlLogBridge(&app);
-        auto *subtitleBridge = new QmlSubtitleBridge(&session, &app);
+        auto *subtitleBridge = new QmlSubtitleBridge(eng, &app);
+        subtitleBridge->setResolver(resolver);
         auto *pairingBridge = new QmlPairingBridge(&app);
+        auto *debrid = new DebridManager(&app);
         auto *notificationBridge = new QmlNotificationBridge(&app);
-        QObject::connect(&session, &SessionManager::torrentFinished,
+        notificationBridge->setSession(eng);
+        QObject::connect(eng, &IEngine::torrentFinished,
                          notificationBridge, &QmlNotificationBridge::onTorrentFinished);
-        QObject::connect(&session, &SessionManager::torrentError,
-                         notificationBridge, &QmlNotificationBridge::onTorrentError);
-        QObject::connect(&session, &SessionManager::killSwitchTriggered,
-                         notificationBridge, &QmlNotificationBridge::onKillSwitchTriggered);
-        QObject::connect(&RssManager::instance(), &RssManager::itemAutoDownloaded,
-                         notificationBridge, &QmlNotificationBridge::onRssAutoDownloaded);
         // Telegram webhook notifications (same event surfaces as the toasts above).
         auto *telegram = new TelegramNotifier(&app);
-        QObject::connect(&session, &SessionManager::torrentFinished,
+        QObject::connect(eng, &IEngine::torrentFinished,
                          telegram, &TelegramNotifier::onTorrentFinished);
-        QObject::connect(&session, &SessionManager::killSwitchTriggered,
+        // Engine-only alert signals (error/kill-switch/suspicious) live on
+        // SessionManager; in IPC mode they aren't proxied yet, so wire them only
+        // in-process. The IPC banner below covers the engine-down case instead.
+        // Forwarded over IPC in split mode (events re-emitted by IpcEngine), so
+        // connect on the IEngine interface — works in-process and split alike.
+        QObject::connect(eng, &IEngine::torrentError,
+                         notificationBridge, &QmlNotificationBridge::onTorrentError);
+        QObject::connect(eng, &IEngine::killSwitchTriggered,
+                         notificationBridge, &QmlNotificationBridge::onKillSwitchTriggered);
+        QObject::connect(eng, &IEngine::suspiciousFilesDetected,
+                         notificationBridge, &QmlNotificationBridge::onSuspiciousFilesDetected);
+        QObject::connect(eng, &IEngine::killSwitchTriggered,
                          telegram, &TelegramNotifier::onKillSwitchTriggered);
-        QObject::connect(&session, &SessionManager::torrentError,
+        QObject::connect(eng, &IEngine::torrentError,
                          telegram, &TelegramNotifier::onTorrentError);
+        // IPC supervision: surface engine respawns to the user as a toast.
+        if (ipcEngine) {
+            QObject::connect(ipcEngine, &IpcEngine::engineStatusChanged, notificationBridge,
+                             [notificationBridge](bool up) {
+                notificationBridge->onTorrentError(up ? QStringLiteral("Torrent engine reconnected")
+                                                      : QStringLiteral("Torrent engine restarting…"));
+            });
+        }
+        QObject::connect(&RssManager::instance(), &RssManager::itemAutoDownloaded,
+                         notificationBridge, &QmlNotificationBridge::onRssAutoDownloaded);
         QObject::connect(&RssManager::instance(), &RssManager::itemAutoDownloaded,
                          telegram, &TelegramNotifier::onRssAutoDownloaded);
         settingsBridge->setTelegramNotifier(telegram);
 
         // Media-server library refresh: ping Plex/Jellyfin when a download finishes.
         auto *mediaNam = new QNetworkAccessManager(&app);
-        QObject::connect(&session, &SessionManager::torrentFinished, &app, [mediaNam](const QString &, const QString &) {
+        QObject::connect(eng, &IEngine::torrentFinished, &app, [mediaNam](const QString &, const QString &) {
             QSettings st;
             if (st.value("plexEnabled", false).toBool()) {
                 const QString url = st.value("plexUrl").toString();
@@ -315,25 +536,27 @@ int main(int argc, char *argv[])
             }
         });
 
-        auto *discordBridge = new DiscordRpcBridge(&session, &app);
-        QObject::connect(&session, &SessionManager::torrentsUpdated,
+        auto *discordBridge = new DiscordRpcBridge(eng, &app);
+        QObject::connect(eng, &IEngine::torrentsUpdated,
                          discordBridge, &DiscordRpcBridge::refresh);
 #ifndef BAT_STORE_BUILD
         auto *updaterBridge = new QmlUpdaterBridge(&app);
 #endif
-        QObject::connect(&session, &SessionManager::torrentsUpdated,
+        QObject::connect(eng, &IEngine::torrentsUpdated,
                          sessionBridge, &QmlSessionBridge::emitStats);
         QObject::connect(resolver, &MetadataResolver::metadataReady,
                          sessionBridge, &QmlSessionBridge::emitStats);
 
-        QObject::connect(&session, &SessionManager::torrentsUpdated,
+        QObject::connect(eng, &IEngine::torrentsUpdated,
                          posterModel, &QmlPosterModel::refresh);
         // Index-aware removal — beginRemoveRows for the exact row instead of a
         // full model reset, so the grid doesn't flash and jump to the top.
-        QObject::connect(&session, &SessionManager::torrentRemoved,
+        // torrentRemoved is forwarded over IPC (the snapshot refresh is the
+        // safety net if the index races), so connect on the IEngine interface.
+        QObject::connect(eng, &IEngine::torrentRemoved,
                          posterModel, &QmlPosterModel::removeRow);
         // Keep the bridge's stored selection indices valid across a removal.
-        QObject::connect(&session, &SessionManager::torrentRemoved,
+        QObject::connect(eng, &IEngine::torrentRemoved,
                          sessionBridge, &QmlSessionBridge::onTorrentRemoved);
         // A resolved poster only touches one row's poster/title roles.
         QObject::connect(resolver, &MetadataResolver::metadataReady,
@@ -343,40 +566,58 @@ int main(int argc, char *argv[])
                          posterModel, &QmlPosterModel::refreshFull);
         QObject::connect(sessionBridge, &QmlSessionBridge::queueMoved,
                          posterModel, &QmlPosterModel::moveRow);
-        QObject::connect(&session, &SessionManager::torrentAdded,
-                         &app, [&session, resolver, notificationBridge](int index) {
-            const auto info = session.torrentAt(index);
-            QString hash = session.torrentHashAt(index);
+        // The per-add cover-hint resolve + add-toast + auto-trackers. Both modes
+        // funnel into one handler: in-process off SessionManager::torrentAdded(int)
+        // (gathering the data + consuming the hint by index), and in split mode off
+        // IEngine::torrentAddedInfo, whose event carries the same data resolved
+        // engine-side (no racing index query). Resume-loaded torrents don't reach
+        // here — loadResumeData() runs in the SessionManager ctor, before this.
+        auto handleAdded = [resolver, notificationBridge, eng](
+                int index, const QString &hash, const QString &name, qint64 totalSize,
+                const QStringList &fileNames, const QString &hintTitle, int hintType) {
             if (!hash.isEmpty()) {
                 // A catalog add carries a clean title + known type (game catalog →
                 // Game, Stremio → Movie/Series). Query the API directly with it
                 // instead of guessing from the messy torrent/metadata name, which
                 // mismatched (e.g. GoW Ragnarök → wrong game).
-                const auto hint = session.takeCoverHint(hash);
-                if (!hint.title.isEmpty() && hint.type >= 0)
-                    resolver->resolveManual(hash, hint.title, static_cast<ContentType>(hint.type));
+                if (!hintTitle.isEmpty() && hintType >= 0)
+                    resolver->resolveManual(hash, hintTitle, static_cast<ContentType>(hintType));
                 else
-                    resolver->resolve(hash, info.name, session.torrentFileNames(index));
+                    resolver->resolve(hash, name, fileNames);
             }
-            // Toast on user-initiated adds. Resume-loaded torrents don't reach
-            // here: loadResumeData() runs in the SessionManager ctor, before
-            // this connection exists.
             notificationBridge->onTorrentAdded(
-                info.totalSize > 0 ? info.name + " · " + formatSize(info.totalSize) : info.name);
-            // auto-add the public tracker list to each new torrent (if enabled)
+                totalSize > 0 ? name + " · " + formatSize(totalSize) : name);
             if (AddonManager::instance().autoTrackersEnabled())
                 for (const QString &tr : AddonManager::instance().trackerList())
-                    session.addTracker(index, tr);
+                    eng->addTracker(index, tr);
+        };
+        if (localSession) {
+            QObject::connect(localSession, &SessionManager::torrentAdded,
+                             &app, [localSession, handleAdded](int index) {
+                const auto info = localSession->torrentAt(index);
+                const QString hash = localSession->torrentHashAt(index);
+                const auto hint = localSession->takeCoverHint(hash);
+                handleAdded(index, hash, info.name, info.totalSize,
+                            localSession->torrentFileNames(index), hint.title, hint.type);
+            });
+        }
+        // Split mode: IpcEngine re-emits this from the forwarded event (never fires
+        // in-process, so it can connect unconditionally).
+        QObject::connect(eng, &IEngine::torrentAddedInfo, &app,
+                         [handleAdded](int index, const QString &hash, const QString &name,
+                                       qint64 totalSize, const QStringList &fileNames,
+                                       const QString &hintTitle, int hintType) {
+            handleAdded(index, hash, name, totalSize, fileNames, hintTitle, hintType);
         });
         AddonManager::instance().fetchTrackerList();   // refresh the list on startup
 
         {
             QStringList hashes, names;
-            for (int i = 0; i < session.torrentCount(); ++i) {
-                QString h = session.torrentHashAt(i);
+            for (int i = 0; i < eng->torrentCount(); ++i) {
+                QString h = eng->torrentHashAt(i);
                 if (!h.isEmpty() && !resolver->hasCached(h)) {
                     hashes << h;
-                    names << session.torrentAt(i).name;
+                    names << eng->torrentAt(i).name;
                 }
             }
             if (!hashes.isEmpty())
@@ -400,6 +641,7 @@ int main(int argc, char *argv[])
                 else if (sys.startsWith("es")) lang = 5;
                 else if (sys.startsWith("de")) lang = 6;
                 else if (sys.startsWith("uk")) lang = 7;
+                else if (sys.startsWith("tr")) lang = 8;
                 else                           lang = 0;
             }
             Translator::instance().setLanguage(static_cast<Translator::Language>(lang));
@@ -428,8 +670,8 @@ int main(int argc, char *argv[])
         engine.rootContext()->setContextProperty("addons", addonBridge);
         engine.rootContext()->setContextProperty("search", searchBridge);
         engine.rootContext()->setContextProperty("discovery", discoveryService);
-        // Store builds stay neutral: hide Discover (the curated browse surface).
-        // Everything else (Search/HUB) is identical.
+        // Store builds stay neutral: the Find page drops the curated catalog
+        // (browse surface) and falls back to plain search. Everything else is identical.
 #ifdef BAT_STORE_BUILD
         engine.rootContext()->setContextProperty("isStoreBuild", true);
 #else
@@ -438,6 +680,7 @@ int main(int argc, char *argv[])
         engine.rootContext()->setContextProperty("logs", logBridge);
         engine.rootContext()->setContextProperty("subsearch", subtitleBridge);
         engine.rootContext()->setContextProperty("pairing", pairingBridge);
+        engine.rootContext()->setContextProperty("debrid", debrid);
         engine.rootContext()->setContextProperty("notifications", notificationBridge);
         engine.rootContext()->setContextProperty("i18n", i18nBridge);
 #ifndef BAT_STORE_BUILD
@@ -483,13 +726,19 @@ int main(int argc, char *argv[])
                          [instanceServer, rootObj, sessionBridge]() {
             QLocalSocket *client = instanceServer->nextPendingConnection();
             if (auto *w = qobject_cast<QWindow *>(rootObj)) {
-                w->show(); w->raise(); w->requestActivate();
+                // show() demotes a maximized window to normal (reported: a
+                // browser magnet click un-maximized the app). Only touch
+                // visibility when actually hidden/minimized.
+                if (w->visibility() == QWindow::Hidden) w->show();
+                else if (w->windowStates() & Qt::WindowMinimized)
+                    w->setWindowStates(w->windowStates() & ~Qt::WindowMinimized);
+                w->raise(); w->requestActivate();
             }
             QObject::connect(client, &QLocalSocket::readyRead, client, [client, sessionBridge]() {
                 const QStringList lines = QString::fromUtf8(client->readAll()).split('\n', Qt::SkipEmptyParts);
                 for (const QString &line : lines) {
                     if (line.endsWith(".torrent")) sessionBridge->requestAddTorrentFile(line);
-                    else if (line.startsWith("magnet:")) sessionBridge->addMagnetUri(line);
+                    else if (line.startsWith("magnet:") || line.startsWith("bittorrent:")) sessionBridge->addMagnetUri(line);
                 }
                 client->deleteLater();
             });
@@ -499,9 +748,15 @@ int main(int argc, char *argv[])
         for (int i = 1; i < app.arguments().size(); ++i) {
             const QString &arg = app.arguments().at(i);
             if (arg.endsWith(".torrent")) sessionBridge->requestAddTorrentFile(arg);
-            else if (arg.startsWith("magnet:")) sessionBridge->addMagnetUri(arg);
+            else if (arg.startsWith("magnet:") || arg.startsWith("bittorrent:")) sessionBridge->addMagnetUri(arg);
         }
 
-        return app.exec();
+        const int rc = app.exec();
+        // `app`'s dtor (Qt/plugin DLL teardown) runs after this, during which a
+        // late Qt log message used to crash inside our handler (Logger touched
+        // mid-DllMain/FreeLibrary at exit — Sentry NATIVE-QT-9); revert to Qt's
+        // default handler first so nothing that late reaches our machinery.
+        qInstallMessageHandler(nullptr);
+        return rc;
     }
 }

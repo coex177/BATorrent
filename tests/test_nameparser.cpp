@@ -7,7 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "app/nameparser.h"
+#include "services/metadata/nameparser.h"
 
 static ParsedName P(const char *s) { return NameParser::parse(QString::fromUtf8(s)); }
 
@@ -68,6 +68,13 @@ TEST_CASE("audio channel layouts don't leak into the title", "[nameparser]")
 {
     CHECK(P("The.Batman.2022.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX").cleanTitle == "The Batman");
     CHECK(P("Shogun.2024.S01E01.MULTi.1080p.WEB.H264-FW").cleanTitle == "Shogun");
+}
+
+TEST_CASE("Portuguese (BR) release tags are stripped from the title", "[nameparser]")
+{
+    CHECK(P("007 - Cassino Royale Dublado").cleanTitle == "007 - Cassino Royale");
+    CHECK(P("Duna.Parte.2.2024.1080p.Legendado").cleanTitle == "Duna Parte 2");
+    CHECK(P("Oppenheimer 2023 Dual.Áudio 1080p").cleanTitle == "Oppenheimer");
 }
 
 TEST_CASE("anime fansub naming: [Group] Title - NN is an episode", "[nameparser]")

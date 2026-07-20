@@ -25,17 +25,15 @@
   <img alt="Fork build" src="https://img.shields.io/badge/fork%20build-Windows%20x86__64%20·%20alpha-dc2626?style=flat-square">
 </p>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 <p align="center">
-  <img src="src/images/with_startup.gif" alt="BATorrent — 開いてすぐ使える、カバーは自動で表示" width="860">
+  <img src="src/images/shot-grid-v43.jpg" alt="BATorrent — 開いてすぐ使える、カバーは自動で表示" width="860">
 </p>
 
 たいていのトレントクライアントは納税申告書みたいな見た目です。これはダウンロードを **映画・ドラマ・ゲームのカバーの壁** として見せます — Netflix や Steam で見慣れたあの感じ — そして6つのテーマ（あるいは自分の壁紙）で着せ替えできます。中身は実績ある **libtorrent** エンジンなので、見た目だけのおもちゃではありません。たまたまセンスも持ち合わせた、本物のクライアントです。
 
-> **広告なし。テレメトリなし。「Pro」版なし。アカウント不要。** 自分から行う唯一の通信は GitHub の更新確認だけで、それもオフにできます。ソースはここにあります — [`updater.cpp`](src/app/updater.cpp) を読んで自分で確かめてください。
+> **広告なし。テレメトリなし。「Pro」版なし。アカウント不要。** 自分から行う唯一の通信は GitHub の更新確認だけで、それもオフにできます。ソースはここにあります — [`updater.cpp`](src/services/integrations/updater.cpp) を読んで自分で確かめてください。
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 ## このフォークの変更点
 
@@ -97,7 +95,15 @@
 
 </details>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
+
+## エンジン
+
+多くの torrent アプリは標準の libtorrent をそのままリンクします。BATorrent は小さな**パッチ適用フォーク**を同梱し、公開 API では届かないエンジンの挙動を変更しています。
+
+- **パイプラインの立ち上がりが速い。** 高帯域・高遅延の回線では、標準のリクエストパイプラインは 1 段ずつしか伸びません。フォークではこれを幾何級数的に伸ばし、太い回線をわずかな往復で埋めます。プロジェクト独自の A/B ベンチマークで高速回線で約 **+27%** を計測。標準版のような実行ごとの失速がなく、性能が下がることもありません。
+- **同一国の peer を優先。** オフラインの GeoIP データベース（db-ip Lite）が各 peer を国で分類し、フォークの peer ランキングは選択の余地があるとき自国の peer を優先します。多くの場合これは、低遅延で、帯域制限を受けやすい国際経路が減ることを意味します。
+
+どちらもフォークのコンパイル時機能（標準ビルドでは無効）で、埋め込みコピーではなく [`third_party/patches/`](third_party/patches) 配下のバージョン管理されたパッチとして適用されます。
 
 ## 入手
 
@@ -119,7 +125,6 @@
 
 <sub>**macOS:** まだ公証（notarization）されていません（Apple の開発者プログラムは有料のため）。Homebrew が最もスムーズです — `brew` が隔離フラグを外すので、Gatekeeper のダイアログなしで開きます。`.dmg` の場合は初回のみ右クリック → **開く**。</sub>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 <details>
 <summary><b>ソースからのビルドと技術メモ</b></summary>

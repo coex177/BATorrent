@@ -18,27 +18,255 @@ Second alpha of the [coex177 fork](https://github.com/coex177/BATorrent), buildi
 - **Sorting by clicking a column title now works.** The selection overlay was intercepting header clicks, so nothing happened; click a title to sort, click again to flip ascending/descending.
 - **The Delete key now opens the Remove dialog** for the selected torrent(s). It had a duplicate key binding that cancelled itself out. Works like F2 does for rename, and still deletes text normally while you're typing in a field.
 
-## v4.2.0 — "Polish"
+## v4.7.0 "Cinema"
 
-The release where BATorrent starts *feeling* like the app it already was. No new pages, no new tabs — hundreds of small decisions instead: every dialog answers Esc, every control shows focus, every state explains itself. Plus one big power feature.
+### Added
+- The built-in player got a full rework. Audio, subtitles and speed now live in
+  one panel instead of three menus; hover the seek bar for a frame preview;
+  a next-episode card with a countdown appears near the end; intro/credits get a
+  skip button when the file has chapters; and the video's colors bleed softly
+  into the black bars (ambient glow, can be turned off in Settings).
+- The player controls are centered and minimalist now, and the volume is an
+  inline slider that slides out on hover.
+- Downloads that are waiting on a queue slot show a "Queued" filter and status.
+- Favorite folders: the add dialogs offer your recent save locations, each with
+  its free space, so a full default disk is one click away from the right one.
+- The disk gauge in the top bar rotates through every drive, not just the main one.
+- Windows: separate settings toggles for .torrent, magnet: and bittorrent:
+  associations; a Refresh button in the toolbar.
+
+### Fixed
+- Linux: the AppImage crashed at launch with an "undefined symbol" error on
+  every machine — it shipped the system libtorrent instead of BATorrent's own.
+  Fixed, with a build check so it can't happen again (#32).
+- Magnets: the Add dialog no longer opens twice after a drag-and-drop, the paste
+  dialog no longer closes before you can start the download, and a magnet from
+  the browser no longer shrinks a maximized window.
+- "Remove with files" now finishes deleting even if you quit right after, and a
+  removed torrent no longer comes back from the watched folder.
+- Detail panel values no longer spill past the edge; the panel can be moved to
+  the bottom in grid view (Settings > Appearance).
+- Windows: peer countries show again; the window no longer opens wider than a
+  scaled screen.
+
+### Changed
+- Settings save as you go, and now say so — a change flashes "Saved" and the
+  button reads "Done".
+- A finished download's card is quieter: the DONE badge carries it, the long
+  status text is gone.
+- Generic torrents (an Ubuntu ISO, a code archive) no longer show a placeholder
+  cover in the details — the layout adapts when there's no artwork.
+
+## v4.6.0 "Signal"
+
+### Added
+- Magnets get a set of well-known open trackers automatically, so fetching
+  metadata no longer depends on DHT alone (Settings > Network > Protocol to
+  turn it off). They're removed — along with DHT/PEX/local discovery — the
+  moment a torrent turns out to be private.
+- Download cards show how much is actually downloaded ("107 MB of 6.4 GB"),
+  live, next to the percentage.
+- With a download limit set, waiting torrents now read "In queue (#3)"
+  instead of a bare "Paused", and start automatically when a slot frees up.
+- A new "Peers found — connecting…" status between searching and downloading,
+  so a fresh torrent explains what it's doing before bytes move.
+- A calm amber pulse along the poster's bottom edge while a torrent is
+  actively seeding.
+- The right-click menu got icons on every action, clearer "Pause download" /
+  "Resume download" labels, and a gentle open animation.
+
+### Fixed
+- Magnets that never fetched or downloaded slowly: BATorrent now bootstraps
+  the DHT from several routers (one blocked host used to mean no DHT at all)
+  and announces to every tracker tier at once, matching other clients.
+- A magnet added moments before a crash no longer vanishes from the list —
+  it's saved the instant you add it.
+- "Remove with files" finally sticks: quitting the app right after removing
+  used to silently leave the data on disk. Pending deletions now finish on
+  the next launch.
+- Torrents you removed could come back on their own if a same-named .torrent
+  was ever processed from the watched folder. Fixed.
+- Pausing a torrent whose engine handle had expired could close the app.
+- The Browse button in the add-torrent dialog did nothing.
+- Windows: peer countries show again (as country codes — Windows has no
+  emoji flags), and the window no longer opens wider than a scaled screen,
+  which pushed the grid's detail column off the edge.
+- Game covers resolve for long subtitled titles ("Garfield Kart 2 All You
+  Can Drift") by retrying with a shorter search.
+- Listening on IPv6 works again when a custom port is configured.
+
+### Changed
+- First run picks a random high listen port instead of 6881 — the classic
+  throttled range, and it collided with other torrent clients on the same
+  machine. Existing installs that never chose a port migrate once.
+- Quieter, more deliberate color: the DONE badge and hover play buttons
+  moved to dark glass, a finished download's progress bar goes neutral, and
+  transfer numbers only wear red/amber while data is actually moving.
+
+## v4.5.1 "Find"
+
+### Added
+- The navigation moved to a bar at the top: Downloads, Find and HUB as tabs,
+  with the disk gauge and the active-download chip beside them. Prefer the old
+  left sidebar? Settings > Appearance > "Classic side navigation" brings it
+  back, nothing else changes.
+- New Find page: Search and Discover merged into one. Browse the featured
+  billboard and the poster shelves (movies, series, games, your list), or just
+  start typing to search. Clearing the search puts you back where you were
+  browsing. Navigation is now three tabs: Downloads, Find, HUB.
+- "Mark as completed" moved to the main right-click menu (it shows up once the
+  download finishes), and the seeding limits you set (ratio or time) now mark
+  the torrent as completed automatically instead of leaving it paused forever.
+- Setting a game executable shows a confirmation, and the game is playable
+  right away, even while the torrent is still finishing other files.
+
+### Fixed
+- Games: Play always responds. A finished game that was still seeding counted
+  as "downloading", so Play silently did nothing. Launch failures now show a
+  message and open the folder, executables that need admin rights get the UAC
+  prompt on Windows, and .app bundles open correctly on macOS.
+- Windows: mouse-wheel scrolling is fast now. Spinning the wheel used to crawl
+  while dragging flew.
+- Windows: the tray menu opens where you click, not in a corner it guessed.
+- Boot protection: an interrupted update that leaves a mismatched engine DLL
+  (our top crash in the wild) now shows a clear re-download dialog instead of
+  crashing in a loop, and after any crashed start the next boot begins with a
+  fresh engine state.
+- Light theme: the game card button label is readable again, the HUB continue
+  rails no longer render as black boxes, and the grid hover shadow no longer
+  smudges on light backgrounds.
+- Grid cards: a long status no longer overlaps the size column. Peers, files
+  and trackers empty states are centered, and the peers table breathes at the
+  top.
+
+### Changed
+- The top bar leads with just the bat glyph (the full wordmark stays on the
+  splash, About and the classic layout), and the grid selection ring is red.
+
+## v4.4.1
+
+A hotfix for v4.4.0, which failed to launch on Windows.
+
+### Fixed
+- **Windows: the app launches again.** v4.4.0 shipped a QML shadow effect
+  (`RectangularShadow`) that failed to resolve on Windows, silently failing
+  the whole UI to load — no crash, no error, the app just quit. Replaced
+  with the same shadow technique already used everywhere else in the app.
+
+## v4.4.0 — "Dublado"
+
+### Added
+- **Releases in your language, finally.** With "Prefer my language" on (the default),
+  the bundled stream source is asked for your-language releases — dubbed included —
+  so they lead the list instead of drowning at the bottom. App in Portuguese?
+  Dual-audio releases now show up first, not at position 19.
+- **Source manager with a localized catalog.** A new "Sources" button in search
+  lists every torrent source with a switch, plus a one-tap catalog grouped by
+  region — Russian/CIS trackers (RuTor, Kinozal, NNM-Club via TorAPI), a
+  Brazilian preset (Comando/BluDV… via torrent-indexer), and Jackett for
+  everything else. Turn on what fits where you live.
+- **BitSearch** ships on by default — a multi-language aggregator (TPB/1337x/
+  YTS/nyaa across languages), so non-English releases surface out of the box.
+- **Series → season → episode.** Picking a series now groups its releases by
+  season, with an episode picker (and complete/season-pack tabs), instead of one
+  flat 400-row list. Stremio series resolve per episode instead of a dead bare id.
+- **Screenshots in the detail drawer** — a strip of backdrops (movies/series) or
+  in-game stills (games) when you open a result.
+- **Dubbed / Subtitled / Original filter.** One tap at the top of search results —
+  see only dubbed releases, only subtitled, or only original audio, in your own
+  language. It knows the difference a viewer actually cares about; ordering can't.
+- **Free up space, without leaving the app.** Click the disk bar in the sidebar
+  to open a panel of every torrent, sortable by size or age, with a one-click
+  delete. When a download won't fit, the "won't fit" dialogs (Search and the
+  add-torrent dialog) now offer a direct "Free up space…" link sized to exactly
+  how much you're short. Adding a `.torrent` with a known size that won't fit no
+  longer bypasses the warning even with "always use default path" on.
+
+### Changed
+- **Two view modes, not three: Grid × Classic.** Plain "List" is gone — Classic
+  supersedes it. Classic is now a real power-user table: seeds, peers, ratio (red
+  under 1.0, green above), live ETA, and sortable columns, cover-less with raw
+  release names in monospace. Every column header sorts.
+
+### Fixed
+- **Progress never claims "100%" early anymore.** A torrent at 99.95% now shows
+  99.9% until it actually finishes — every progress display floors instead of
+  rounding, so "100%" is back to being a promise.
+- **The what's-new screen no longer loses the dev note when a hotfix replaces a
+  release** (as 4.3.1 replaced 4.3.0): notes now belong to the release line.
+- **The player now shows a spinner when it actually runs out of buffer**, not just
+  when Qt's own stall detection fires (which a growing torrent file never
+  reliably triggers) — playback freezing with no feedback is now a spinner
+  instead of a silent stop.
+- **Fixed two crashes** found via crash reporting: one when a torrent's
+  selection state went stale (e.g. removed while still selected), one at
+  app shutdown when a very-late log message could still reach the log file
+  after it had already closed.
+
+### Security
+- **Web UI password hardened**: stored as salted PBKDF2 (100k iterations) instead
+  of unsalted SHA-256. Existing setups upgrade automatically on the next login.
+
+## v4.3.1
+
+A hotfix for v4.3.0, which failed to launch on Windows.
+
+### Fixed
+- **Windows: the app launches again.** v4.3.0 shipped the wrong libtorrent DLL next
+  to the executable — a build that didn't match the one the app was compiled
+  against — so Windows refused to start with a "procedure entry point not found"
+  error. The correct engine library is now packaged. (#20)
+
+### Under the hood
+- Code-review pass over the engine's IPC layer, networking services, the web UI,
+  and the QML views: hardened the IPC frame parser against malformed input, added
+  request timeouts to every network client, sped up release-name parsing, and
+  fixed a handful of latent QML property bugs. No behaviour changes you'll notice —
+  the app is just steadier.
+
+## v4.3.0 — "Continue"
+
+The first release since v4.1.0, and a big one. Pick up where you left off, see what's actually worth downloading, and feel the hundreds of small decisions that finally make the whole app *fit*: bigger heros and real swarm health, automatic subtitles, a command palette, and a long list of long-standing bugs put to rest.
 
 ### Highlights
-- **Command palette** — press **Ctrl/⌘+K** anywhere: jump to any torrent by name, pause/resume everything, toggle alt speed, open any page or window. One box, fuzzy search, no mouse.
-- **Unified window chrome (macOS)** — the native title bar is gone; the window controls sit inside the app. No more gray strip fighting your theme. (Windows/Linux keep native chrome for now.)
+- **Continue watching / playing heros** — the HUB opens on your last movie and last game as large cards: progress, time left, hours played, last played, and a one-click **Resume**.
+- **Command palette** — press **Ctrl/⌘+K** anywhere: jump to any torrent by name, pause/resume everything, toggle alt speed, open any page or window (it can jump straight to any Settings section). One box, fuzzy search, no mouse.
+- **Player rebuilt** — a solid title bar showing the file's quality/audio, a two-row control deck, a buffer-ahead HUD, and resume that actually sticks (it no longer restarts streamed torrents from zero).
+- **Automatic subtitles** — the built-in player now finds and downloads subtitles for **movies and series on its own**, no account needed, with a **language picker** to pull subs in any language. Still has manual load and ±0.5 s sync nudges; power users can plug their own OpenSubtitles account for a bigger quota.
+- **Search by language** — a language filter on movie/series results (with a per-result language badge and a `DUB` marker) so you can go straight to a dubbed or your-language release.
+- **Finished a movie? Play now** — when a download completes, a one-click *Play now* opens it in the player.
+- **Real source health in Discover & Search** — the featured title shows a live **"N sources · best X GB · seeds"** line (one cached lookup), and the torrent list gets a green/amber/red **seed-health bar**.
+- **Discover type filter** — All / Games / Movies / Series, with a hybrid hero (ambient art + crisp poster) that always has a banner, even for games with no backdrop.
+- **Best match, explicitly** — search surfaces the top title as its own hero instead of just first in the grid.
 - **Torrents explain why they're stuck** — hover a stalled torrent's state and it tells you: no peers yet, no seeds connected, peers not uploading, or the actual error. The eternal silent "stalled" finally speaks.
-- **Delete sends data to the trash** — "remove with files" now moves data to the system trash instead of erasing it permanently. Recoverable by design.
+- **Unified window chrome (macOS)** — the native title bar is gone; the window controls sit inside the app. No more gray strip fighting your theme. (Windows/Linux keep native chrome for now.)
+- **Delete sends data to the trash** — "remove with files" moves data to the system trash instead of erasing it permanently. Recoverable by design (with an opt-in **"Delete permanently"** when you're low on disk).
 - **Free disk space in the status bar**, next to your totals.
 
 ### Fixed
+- **The window remembers its size** — it reopens at the size you left it instead of snapping back to the default on every launch.
+- **The listen port stops resetting** — after you change the port, the Settings field no longer flips back to the old value (it was reading the socket before libtorrent finished re-binding).
+- **Paused torrents stay paused** across restarts (they were quietly resuming on launch).
+- **Removed files no longer linger** — the hidden `.parts` sidecar is cleaned up, and the **"Delete permanently"** option skips the Trash when you're low on disk.
+- **The Downloads search box** no longer stays stuck red after one click, and **Ctrl/⌘+K opens ready to type**.
+- The **repack filter** opens on the first click again.
+- **Movies no longer offer "Install"** — a film still downloading (its files end in `.!bt`) could be mistaken for a game; the Install/Play vs Watch choice now reads the actual file evidence.
+- **Games with the `.exe` buried in subfolders** are detected as games again — and **Play** opens the game instead of a stray 30-second intro clip it found first.
+- **Mouse-wheel scrolling** moves a sensible amount per notch on Discover, the HUB, Search and Settings (it used to crawl one line at a time).
+- **(Windows) the tray right-click menu** anchors to the tray icon again instead of drifting.
+- **The nav-rail activity card no longer vanishes** when downloads are paused (e.g. disk-low auto-pause) — it keeps showing your downloads or seeding.
 - **Mixed-language UI** — search source/category names, result counts, status texts, the port diagnostics and the nav rail no longer show Portuguese in a non-Portuguese UI. (All 8 languages got a full pass.)
 - **Duplicate search results** are deduplicated by infohash across providers.
 - **HTML entities in result titles** (`&ndash;` and friends) now render as real characters.
 - **Settings labels** no longer leak `&` accelerator marks ("&Export Settings").
 - **Peers tab** country column no longer overlaps the IP header.
 - **Update check errors** no longer pop a dialog on silent startup checks.
-- The **port status indicator** moved from the crowded filter bar (where it clipped) to the status bar.
+- **Fully translated, everywhere** — the new subtitle, search-by-language and disk-guard strings are now localized across all eight languages instead of falling back to English, the HUB empty-state shows its intended text again (it was stuck on a stale duplicate), and a diagnostics line that leaked a raw `detail_seeds` label now reads "Seeds".
 
 ### Polish
+- A disk-aware search footer warns when results won't fit your free space, and **adding a too-big torrent now asks first** ("needs X, Y free — add anyway?") instead of silently piling up.
+- "Get best" stepped back from red so it stops competing with the Search button.
+- The Discover hero rotates with clickable dots.
 - **Esc closes every dialog and window; Enter confirms** — including stacked dialogs.
 - **Keyboard focus rings** on every control (Tab around the whole app) and **press feedback** on every button.
 - **Semantic state colors**: completed reads green, seeding amber — a 100% red pill no longer looks like an error.
@@ -50,7 +278,7 @@ The release where BATorrent starts *feeling* like the app it already was. No new
 - About dialog links to GitHub, releases and the privacy policy.
 
 ### Under the hood
-- Crash detection now offers a **one-click pre-filled GitHub issue** (opt-in toast, with the log tail for review) — nothing is ever sent automatically; the privacy policy is unchanged.
+- **Fewer crashes, fixed faster** — opt-in crash reporting now captures the rare crash with a symbolicated stack, and crash detection offers a **one-click pre-filled GitHub issue** (opt-in toast, with the log tail for review). Nothing is ever sent automatically; the privacy policy is unchanged.
 - The app keeps a tiny **local daily usage history** (bytes, torrents added/completed per category) — fully offline, feeds upcoming statistics features.
 - Shared menu/dialog components, motion/focus design tokens, and a stats-history test suite.
 

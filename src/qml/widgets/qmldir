@@ -1,4 +1,6 @@
 IconImg 1.0 IconImg.qml
+PIconBtn 1.0 PIconBtn.qml
+FavFolders 1.0 FavFolders.qml
 BtnFlat 1.0 BtnFlat.qml
 TFld 1.0 TFld.qml
 TArea 1.0 TArea.qml
@@ -12,6 +14,13 @@ EmptyState 1.0 EmptyState.qml
 PosterThumb 1.0 PosterThumb.qml
 PosterCard 1.0 PosterCard.qml
 DetailPeers 1.0 DetailPeers.qml
+DetailKVSection 1.0 DetailKVSection.qml
+DetailGeneral 1.0 DetailGeneral.qml
+DetailGraph 1.0 DetailGraph.qml
+DetailTabs 1.0 DetailTabs.qml
+DownloadCarousel 1.0 DownloadCarousel.qml
+DetailSidebar 1.0 DetailSidebar.qml
+PosterShelf 1.0 PosterShelf.qml
 DetailFiles 1.0 DetailFiles.qml
 DetailTrackers 1.0 DetailTrackers.qml
 DetailPieces 1.0 DetailPieces.qml
@@ -22,3 +31,4 @@ BatMenuItem 1.0 BatMenuItem.qml
 BatMenuSep 1.0 BatMenuSep.qml
 singleton DialogStack 1.0 DialogStack.qml
 SpeedGraph 1.0 SpeedGraph.qml
+WheelScroller 1.0 WheelScroller.qml

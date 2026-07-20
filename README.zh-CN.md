@@ -25,17 +25,15 @@
   <img alt="Fork build" src="https://img.shields.io/badge/fork%20build-Windows%20x86__64%20·%20alpha-dc2626?style=flat-square">
 </p>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 <p align="center">
-  <img src="src/images/with_startup.gif" alt="BATorrent — 打开即用，封面自动加载" width="860">
+  <img src="src/images/shot-grid-v43.jpg" alt="BATorrent — 打开即用，封面自动加载" width="860">
 </p>
 
 大多数 BT 客户端长得像报税表。这一个把你的下载呈现为 **一墙电影、剧集和游戏封面** — 就像你在 Netflix 或 Steam 上看到的那样 — 还能用六款主题（或你自己的壁纸）来装扮它。底层是久经考验的 **libtorrent** 引擎，所以它不是中看不中用的玩具：而是一个恰好还有点品味的真正客户端。
 
-> **无广告。无遥测。无「Pro」版。无需账号。** 它唯一会自行发起的请求是 GitHub 更新检查，而且可以关闭。源代码就在这里 — 阅读 [`updater.cpp`](src/app/updater.cpp)，自己来验证。
+> **无广告。无遥测。无「Pro」版。无需账号。** 它唯一会自行发起的请求是 GitHub 更新检查，而且可以关闭。源代码就在这里 — 阅读 [`updater.cpp`](src/services/integrations/updater.cpp)，自己来验证。
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 ## 本分支的不同之处
 
@@ -97,7 +95,15 @@
 
 </details>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
+
+## 引擎
+
+大多数 BT 客户端链接的是原版 libtorrent。BATorrent 附带一个经过**小幅打补丁的分支**，从而改变公共 API 触及不到的引擎行为：
+
+- **更快的管线爬升。** 在高带宽、高延迟的线路上，原版的请求管线每次只增长一步；本分支让它按几何级增长，用极少的往返就能填满粗管道。在项目自带的 A/B 基准中，快速线路上实测约 **+27%**，且没有原版那种批次间的卡顿，也从不倒退。
+- **同国 peer 优先。** 一个离线 GeoIP 数据库（db-ip Lite）按国家标记每个 peer，本分支的 peer 排序在有选择时优先连接你所在国家的 peer——这通常意味着更低的延迟和更少被限速的跨境线路。
+
+两者都是分支的编译期特性（原版构建中关闭），并以带版本的补丁形式应用于 [`third_party/patches/`](third_party/patches)，而非内嵌副本。
 
 ## 获取
 
@@ -119,7 +125,6 @@
 
 <sub>**macOS：** 尚未进行公证（Apple 的开发者计划需付费）。Homebrew 最省心 — `brew` 会移除隔离标记，应用直接打开，不会弹 Gatekeeper 提示。若用 `.dmg`，首次请右键 → **打开**。</sub>
 
-<img src="https://capsule-render.vercel.app/api?type=rect&color=dc2626&height=3&width=100%25" width="100%"/>
 
 <details>
 <summary><b>从源码构建与工程说明</b></summary>

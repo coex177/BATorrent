@@ -5,6 +5,7 @@
 // Source: BATorrent Add Torrent.html + bat-dialog.css
 // Data-driven: populated from session.previewTorrent(path). OK → addTorrentWithPrefs.
 import QtQuick
+import QtQuick.Dialogs
 import QtQuick.Effects
 import QtQuick.Layouts
 import "theme"
@@ -21,19 +22,35 @@ BatDialog {
     property string torrentPath: ""
     property string torrentName: ""
     property string totalSize: ""
+    property double totalSizeBytes: 0
     property int fileCount: 0
     property int selectedCount: 0
     property string infoHash: ""
     property string posterPath: ""
     property alias savePath: pathFld.text
+    signal freeSpaceRequested(double targetBytes)
 
     readonly property string posterUrl: posterPath && posterPath.length > 0
         ? (Qt.platform.os === "windows" ? "file:///" : "file://") + encodeURI(posterPath) : ""
+
+    // disk-fit check against the CURRENT destination — re-run when the path
+    // changes and every 2s while open, so switching drives or freeing space
+    // updates the warning live (it used to freeze on the first reading)
+    property double freeBytes: -1
+    readonly property bool wontFit: dlg.freeBytes >= 0 && dlg.totalSizeBytes > dlg.freeBytes
+    function refreshFit() {
+        if (typeof session === "undefined") return
+        freeBytes = session.freeBytesAt(pathFld.text.length > 0 ? pathFld.text : "")
+    }
+    onSavePathChanged: refreshFit()
+    onOpenedChanged: if (opened) { refreshFit(); favRow.reload() }
+    Timer { interval: 2000; running: dlg.opened; repeat: true; onTriggered: dlg.refreshFit() }
 
     function loadPreview(p, path) {
         dlg.torrentPath = path
         dlg.torrentName = p.name || ""
         dlg.totalSize = p.totalSize || ""
+        dlg.totalSizeBytes = p.totalSizeBytes || 0
         dlg.fileCount = p.fileCount || 0
         dlg.infoHash = p.infoHash || ""
         dlg.posterPath = p.posterPath || ""
@@ -71,6 +88,12 @@ BatDialog {
     }
 
     ListModel { id: fileModel }
+
+    FolderDialog {
+        id: saveFolderDlg
+        onAccepted: if (typeof session !== "undefined")
+            pathFld.text = session.urlToLocalPath(saveFolderDlg.selectedFolder.toString())
+    }
 
     // ----- header -----
     RowLayout {
@@ -122,6 +145,37 @@ BatDialog {
         }
     }
 
+    // ----- disk-fit warning -----
+    Rectangle {
+        Layout.fillWidth: true
+        visible: dlg.wontFit
+        implicitHeight: fitRow.implicitHeight + 16
+        radius: 8
+        color: Qt.rgba(Theme.amber.r, Theme.amber.g, Theme.amber.b, 0.12)
+        border.color: Qt.rgba(Theme.amber.r, Theme.amber.g, Theme.amber.b, 0.32)
+        border.width: 1
+        RowLayout {
+            id: fitRow
+            anchors.fill: parent
+            anchors.margins: 10
+            spacing: 10
+            IconImg { src: "qrc:/icons/triangle-alert.svg"; tint: Theme.amber; s: 15; Layout.alignment: Qt.AlignVCenter }
+            Text {
+                Layout.fillWidth: true
+                text: (i18n.language, i18n.t("addt_wontfit")).arg(dlg.totalSize)
+                color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans
+                wrapMode: Text.WordWrap
+            }
+            BtnFlat {
+                text: (i18n.language, i18n.t("search_wontfit_freeup"))
+                onClicked: {
+                    dlg.freeSpaceRequested(Math.max(0, dlg.totalSizeBytes - dlg.freeBytes))
+                    dlg.close()
+                }
+            }
+        }
+    }
+
     // ----- file head -----
     RowLayout {
         Layout.fillWidth: true
@@ -155,7 +209,11 @@ BatDialog {
                     anchors.rightMargin: 14
                     spacing: 10
                     TChk { Layout.alignment: Qt.AlignVCenter; on: model.on; onToggled: function(v) { fileModel.setProperty(index, "on", v); dlg.recount() } }
-                    Text { text: model.dir ? "📁" : "📄"; color: model.dir ? Theme.amber : Theme.t3; font.pixelSize: 13 }
+                    IconImg {
+                        src: model.dir ? "qrc:/icons/open.svg" : "qrc:/icons/file.svg"
+                        tint: model.dir ? Theme.amber : Theme.t3; s: 13
+                        Layout.alignment: Qt.AlignVCenter
+                    }
                     Text {
                         Layout.fillWidth: true
                         text: model.path; color: Theme.t1
@@ -168,12 +226,18 @@ BatDialog {
         }
     }
 
-    // ----- save path -----
+    // ----- save path + favorite folders -----
     ColumnLayout {
         Layout.fillWidth: true
         spacing: 7
         Text { text: (i18n.language, i18n.t("detail_kv_save_to")); color: Theme.t3; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.fontSans }
-        PathFld { id: pathFld; Layout.fillWidth: true }
+        PathFld { id: pathFld; Layout.fillWidth: true; onBrowseClicked: saveFolderDlg.open() }
+        FavFolders {
+            id: favRow
+            Layout.fillWidth: true
+            current: pathFld.text
+            onPicked: function(p) { pathFld.text = p }
+        }
     }
 
     // ----- start now -----

@@ -24,8 +24,12 @@ compile_commands.json
 *.swp
 *~
 
-# Claude Code local settings
-.claude/settings.local.json
+# Claude Code — everything local only, never in the public repo (settings,
+# skills, and the operational PR-review workflows).
+.claude/
+/CLAUDE.md
+.github/workflows/claude.yml
+.github/workflows/claude-code-review.yml
 
 # Compiled
 *.o
@@ -38,3 +42,9 @@ compile_commands.json
 # local test build dir
 build-tests/
 build-asan/
+
+# fork-from-source build dir
+build-fork/
+
+# dev-only Qt ffmpeg media plugin (built locally, see internal/REVIEW.md W5)
+/dev-qt-plugins/

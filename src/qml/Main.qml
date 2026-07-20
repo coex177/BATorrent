@@ -21,11 +21,18 @@ Window {
     // floor wide enough that the full toolbar (labels + speed module) always
     // fits — below this the RowLayout would have to clip, which is what made
     // the old icon-only "compact" hack feel broken.
-    minimumWidth: 1288   // +188 for the nav rail (content area stays >=1100 so the toolbar never clips)
+    // classic keeps the old +188 rail budget; the top bar frees that width
+    // Capped to the screen: on DPI-scaled laptops (150% on 1920 = 1280 logical)
+    // an uncapped floor forces the window wider than the desktop and the right
+    // column (grid detail sidebar) renders past the screen edge.
+    minimumWidth: Math.min(layoutClassic ? 1288 : 1200,
+                           Screen.desktopAvailableWidth > 0 ? Screen.desktopAvailableWidth : 1288)
     minimumHeight: 640
     color: Theme.bg
-    flags: Theme.unifiedChrome ? (Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint) : Qt.Window
-    title: Theme.unifiedChrome ? "" : "BATorrent"
+    // classic rail merges the macOS titlebar into its brand zone; the top-bar
+    // layout keeps the native titlebar so the traffic lights live outside the bar
+    flags: (Theme.unifiedChrome && layoutClassic) ? (Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint) : Qt.Window
+    title: (Theme.unifiedChrome && layoutClassic) ? "" : "BATorrent"
 
     // Close button hides to the tray instead of quitting (quitOnLastWindowClosed
     // is false). If no tray is available, really quit so the app can't get stuck
@@ -48,23 +55,58 @@ Window {
         }
     }
 
+    // current page of the content stack (0 Downloads · 1 Discover · 2 Search ·
+    // 3 HUB · 4 Settings). Owned by the window so navigation works whichever
+    // nav component (rail or top bar) is loaded.
+    property int currentPage: 0
+    // classic layout = the pre-4.5 left nav rail; default is the top bar.
+    // Only one nav component is ever loaded — a hidden rail would keep its
+    // carousel timer and ~30 session bindings alive for nothing.
+    property bool layoutClassic: false
+    // grid-mode detail panel: side inspector (default) or the bottom deck. Both
+    // components already exist; this just picks which one the grid uses — a
+    // side panel suits wide screens, a bottom deck suits narrow ones.
+    property bool detailBottom: false
+    // the contextual continue/download chip in the top bar (some users find it
+    // redundant on the Downloads page)
+    property bool showDownloadChip: true
+    readonly property Item navHost: layoutClassic ? navRailLoader.item : navBarLoader.item
+    function selectTorrentByHash(infoHash) {
+        if (typeof session === "undefined") return
+        if (!session.selectByInfoHash(infoHash)) { win.setFilter("all"); session.selectByInfoHash(infoHash) }
+    }
+    function promptRenameFile(idx, current) {
+        inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), current, "",
+            function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) })
+    }
+    // Shared by the File menu, the toolbar "Link" button and the empty state.
+    function promptHttpDownload() {
+        inputPrompt.openWith(i18n.t("menu_add_http"), i18n.t("prompt_http_url"), "", "https://…/file.zip",
+            function(t){ if (t.length > 0) session.addHttpUrl(t) })
+    }
+    Connections {
+        target: typeof settings !== "undefined" ? settings : null
+        function onChanged() {
+            var v = settings.get("layoutClassic")
+            win.layoutClassic = (v === true || v === 1 || v === "1" || v === "true")
+            win.detailBottom = settings.get("detailBottom") === true
+            win.showDownloadChip = settings.get("showDownloadChip") !== false
+        }
+    }
+
     property int selected: -1          // focus row (drives the detail panel)
     property var selectedRows: []      // multi-selection (proxy rows)
     property int anchorRow: -1         // shift-range anchor
-    // view: "grid" (posters) | "list" (rows + thumb) | "compact" (rows, no art).
-    // gridView/compactView are derived so the rest of the file keeps reading them.
-    property string viewMode: "grid"
-    readonly property bool gridView: viewMode === "grid"
-    readonly property bool compactView: viewMode === "compact"
-    readonly property int listRowH: compactView ? 40 : 56
-    function setViewMode(m) {
-        if (m !== "grid" && m !== "list" && m !== "compact") return
-        viewMode = m
-        if (typeof settings !== "undefined") settings.set("viewMode", m)
-    }
+    property bool gridView: true
+    // classic mode: a clean, cover-less, raw-name list for users the media-hub
+    // styling puts off (qBittorrent-like). Persisted; implies the list layout.
+    property bool classicMode: false
+    onClassicModeChanged: if (typeof settings !== "undefined") settings.set("classicMode", classicMode)
     property string activeFilter: "all"
     property string catFilter: ""
-    // startup splash — shown on every launch unless disabled in Settings
+    // startup splash — ceremony only when something happened: first run or the
+    // first launch after an update. A routine (often magnet-click) launch goes
+    // straight to the UI. The Settings toggle still kills it entirely.
     property bool showSplash: false
     Component.onCompleted: {
         // restore the last window size (only if it's still sane vs the minimums)
@@ -73,18 +115,24 @@ Window {
             var sh = Number(settings.get("winHeight") || 0)
             if (sw >= win.minimumWidth && sw <= Screen.desktopAvailableWidth) win.width = sw
             if (sh >= win.minimumHeight && sh <= Screen.desktopAvailableHeight) win.height = sh
-            var vm = settings.get("viewMode")
-            if (vm === "grid" || vm === "list" || vm === "compact") win.viewMode = vm
-            var sc = settings.get("sortColumn")
-            if (sc) {
-                win.sortColumn = sc
-                win.sortAsc = settings.get("sortDir") !== "desc"
-                if (typeof torrentFilter !== "undefined") torrentFilter.setSortColumn(sc, win.sortAsc)
-            }
-            var dt = Number(settings.get("detailTab"))
-            if (dt >= 0 && dt <= 4) win.detailTab = dt
         }
-        showSplash = (typeof settings === "undefined") || settings.get("showSplash") !== false
+        if (typeof settings !== "undefined") win.classicMode = settings.get("classicMode") === true
+        if (win.classicMode) win.gridView = false   // classic is a list layout
+        if (typeof settings !== "undefined") {
+            var lc = settings.get("layoutClassic")
+            win.layoutClassic = (lc === true || lc === 1 || lc === "1" || lc === "true")
+            win.detailBottom = settings.get("detailBottom") === true
+            win.showDownloadChip = settings.get("showDownloadChip") !== false
+        }
+        if (typeof settings === "undefined") {
+            showSplash = true
+        } else {
+            // read welcomeShown/lastSeenVersion BEFORE maybeShowWelcome mutates them
+            var curVer = (typeof themeBridge !== "undefined" && themeBridge.appVersion) ? themeBridge.appVersion : ""
+            var isFirstRun = settings.get("welcomeShown") !== true
+            var isUpdate = curVer.length > 0 && settings.get("lastSeenVersion") !== curVer
+            showSplash = settings.get("showSplash") !== false && (isFirstRun || isUpdate)
+        }
         // start hidden in the tray if the user asked for it (and a tray exists)
         if (typeof settings !== "undefined" && settings.get("startTray") === true && trayIcon.available)
             win.visible = false
@@ -109,6 +157,19 @@ Window {
     Timer {
         interval: 3500; running: true; repeat: false
         onTriggered: if (typeof themeBridge !== "undefined") themeBridge.markBootHealthy()
+    }
+    // Regaining focus with a fresh magnet link on the clipboard pops the Add
+    // dialog pre-filled — copy a link in the browser, alt-tab back, confirm.
+    // Deferred: when activation comes from a CLICK, the press that focused the
+    // window used to land on the fresh dialog's backdrop and close it instantly
+    // (reported as "the dialog disappears before I can press Download").
+    onActiveChanged: if (active) clipMagnetDelay.restart()
+    Timer { id: clipMagnetDelay; interval: 250; onTriggered: win.checkClipboardMagnet() }
+    function checkClipboardMagnet() {
+        if (typeof session === "undefined") return
+        if (magnetDlg.opened || addTorrentDlg.opened) return
+        var m = session.clipboardMagnetIfNew()
+        if (m.length > 0) magnetDlg.openWithMagnet(m)
     }
     // first launch → the interactive tour (opens with a welcome step); an update
     // (version changed) → the what's-new screen. Once each, never both, never on
@@ -145,21 +206,30 @@ Window {
     }
     readonly property var presetCats: ["Apps", "Games", "Movies", "Series"]
     property int detailTab: 0   // 0 Geral · 1 Peers · 2 Arquivos · 3 Trackers · 4 Pedaços
-    onDetailTabChanged: if (typeof settings !== "undefined") settings.set("detailTab", detailTab)
+    property bool detailsCollapsed: typeof settings !== "undefined" && settings.get("detailsCollapsed") === true
+    function toggleDetailsCollapsed() {
+        detailsCollapsed = !detailsCollapsed
+        if (typeof settings !== "undefined") settings.set("detailsCollapsed", detailsCollapsed)
+    }
+    // lock pins the panel to its current open/closed state, overriding auto-collapse
+    property bool detailsLocked: typeof settings !== "undefined" && settings.get("detailsLocked") === true
+    function toggleDetailsLocked() {
+        detailsLocked = !detailsLocked
+        if (typeof settings !== "undefined") settings.set("detailsLocked", detailsLocked)
+    }
     // The Peers tab pulls every peer from libtorrent — only keep it live while open.
     readonly property bool peersTabOpen: win.hasSel && win.detailTab === 1
     onPeersTabOpenChanged: if (typeof session !== "undefined") session.setDetailPeersActive(peersTabOpen)
     property string sortColumn: ""
     property bool sortAsc: true
-    onSortColumnChanged: if (typeof settings !== "undefined") settings.set("sortColumn", sortColumn)
-    // stored as a string: QSettings round-trips bool as int on Windows
-    onSortAscChanged: if (typeof settings !== "undefined") settings.set("sortDir", sortAsc ? "asc" : "desc")
 
     // live model from C++ (QmlTorrentFilterProxy → QmlPosterModel). Roles:
     // torrentName, metaTitle, stateKey, progress(0..1), posterPath, stateString,
     // downSpeed, upSpeed, category, numPeers, downRate, upRate, size, infoHash.
     readonly property var model: typeof torrentModel !== "undefined" ? torrentModel : null
     readonly property bool hasSel: typeof session !== "undefined" && session.hasSelection
+    // auto-collapse when there's nothing to show, unless the user locked the panel's state
+    readonly property bool detailsShownCollapsed: win.detailsLocked ? win.detailsCollapsed : (win.detailsCollapsed || !win.hasSel)
 
     // ----- state→color helpers (keyed by real stateKey) -----
     function fillFor(k) {
@@ -181,6 +251,14 @@ Window {
         if (k === "seeding") return Theme.amber                       // seeding = amber
         if (k === "paused" || k === "queued") return Theme.t4         // paused = gray
         return Theme.accent                                           // downloading = red
+    }
+    function fmtEta(sec) {
+        if (sec < 0) return ""
+        var u = sec >= 86400 ? Math.floor(sec / 86400) + "d"
+              : sec >= 3600  ? Math.floor(sec / 3600) + "h"
+              : sec >= 60    ? Math.floor(sec / 60) + "m"
+              : sec + "s"
+        return i18n.t("eta_left").arg(u)
     }
     function _commitSel() {
         if (typeof session === "undefined" || typeof torrentFilter === "undefined") return
@@ -212,6 +290,7 @@ Window {
         win.selectedRows = rows
         win.selected = proxyRow
         _commitSel()
+        if (filterBar.searchInput.activeFocus) filterBar.searchInput.focus = false   // release the search field so its accent border doesn't stick
     }
     function isRowSelected(proxyRow) { return win.selectedRows.indexOf(proxyRow) >= 0 }
     function selectAll() {
@@ -254,7 +333,10 @@ Window {
         }
     }
     function openContext(proxyRow) {
-        win.selectRow(proxyRow)
+        // right-clicking inside an existing multi-selection must not collapse
+        // it to just this row — that silently turned "remove 3 selected" into
+        // "remove 1" (reported by a user)
+        if (!win.isRowSelected(proxyRow)) win.selectRow(proxyRow)
         ctxMenu.popup()
     }
     // keep the visual selection glued to the item when the queue reorders
@@ -275,9 +357,9 @@ Window {
             if (win.anchorRow >= 0) win.anchorRow = win.remapRow(win.anchorRow, from, to)
         }
     }
-    function gridCols() { return Math.max(1, Math.floor(grid.width / grid.cellWidth)) }
+    function gridCols() { return Math.max(1, Math.floor(libraryView.grid.width / libraryView.grid.cellWidth)) }
     function moveSel(step) {
-        var view = win.gridView ? grid : list
+        var view = win.gridView ? libraryView.grid : libraryView.list
         var n = view.count
         if (n <= 0) return
         var cur = win.selected
@@ -287,26 +369,16 @@ Window {
         view.positionViewAtIndex(next, win.gridView ? GridView.Contain : ListView.Contain)
     }
 
-    // styled menu item reused by the category menus
-    component CatItem: MenuItem {
-        id: cmi
-        implicitHeight: 30
-        padding: 0
-        contentItem: Text {
-            leftPadding: 14; rightPadding: 14
-            text: cmi.text
-            color: cmi.highlighted ? Theme.t1 : Theme.t2
-            font.pixelSize: 12; font.family: Theme.fontSans
-            verticalAlignment: Text.AlignVCenter
-        }
-        background: Rectangle { color: cmi.highlighted ? Theme.hover : "transparent"; radius: 5 }
-    }
-
     // ----- shared context menu (right-click on grid tile / list row) -----
     Menu {
         id: ctxMenu
         modal: true
         implicitWidth: 220
+        // flush rows (the accent header reads as a band, not a floating pill);
+        // just a breath of space under the last row so Remove isn't glued to
+        // the card's bottom edge
+        padding: 0
+        bottomPadding: 6
         background: Rectangle {
             color: Theme.panel
             border.color: Theme.hair
@@ -315,21 +387,42 @@ Window {
         }
         component CtxItem: MenuItem {
             id: ci
+            property string iconSrc: ""
+            // gutter aligns iconless rows (submenu titles) to the icon column
+            property bool gutter: false
+            // destructive: red icon + red text on hover (Remove)
+            property bool destructive: false
             implicitHeight: enabled ? 30 : 1
             visible: enabled
             padding: 0
-            contentItem: Text {
-                leftPadding: 14
-                rightPadding: 14
-                text: ci.text
-                color: ci.highlighted ? Theme.t1 : Theme.t2
-                font.pixelSize: 12
-                font.family: Theme.fontSans
-                verticalAlignment: Text.AlignVCenter
+            contentItem: Item {
+                IconImg {
+                    visible: ci.iconSrc !== ""
+                    src: ci.iconSrc; s: 14
+                    tint: ci.destructive ? Theme.accent
+                                         : (ci.highlighted ? Theme.t1 : Theme.t3)
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                    anchors.fill: parent
+                    leftPadding: (ci.iconSrc !== "" || ci.gutter) ? 38 : 14
+                    rightPadding: 14
+                    text: ci.text
+                    color: ci.destructive && ci.highlighted ? Theme.accent
+                          : ci.highlighted ? Theme.t1 : Theme.t2
+                    font.pixelSize: 12
+                    font.family: Theme.fontSans
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
             }
             background: Rectangle {
-                color: ci.highlighted ? Theme.hover : "transparent"
+                color: ci.highlighted
+                       ? (ci.destructive ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12) : Theme.hover)
+                       : "transparent"
                 radius: 5
+                Behavior on color { ColorAnimation { duration: 80 } }
             }
             arrow: Text {
                 visible: ci.subMenu
@@ -342,17 +435,138 @@ Window {
             }
         }
         component Sep: MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: Theme.hairSoft } }
-        delegate: CtxItem {}
+        // submenu title rows are spawned from this delegate — the gutter keeps
+        // their text on the same column as the icon rows above
+        delegate: CtxItem { gutter: true }
+
+        // gentle pop: fade + 4px rise, matching the app's page transitions
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 120; easing.type: Easing.OutCubic }
+                NumberAnimation { property: "y"; duration: 140; easing.type: Easing.OutCubic
+                                  from: ctxMenu.y + 4; to: ctxMenu.y }
+            }
+        }
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1.0; to: 0.0; duration: 80; easing.type: Easing.InCubic }
+        }
+
+        // Games lead the menu with an accent button (state-driven, Steam model):
+        // Play when ready, else Install. A torrent is a game XOR a video, so only
+        // one of gameCtx/playCtx is ever visible — both sit at the very top.
+        MenuItem {
+            id: gameCtx
+            // depend on selectedHash (NOTIFY selectionChanged), not win.selected:
+            // the QML row changes BEFORE the C++ selection commits, so binding to
+            // it showed the PREVIOUS torrent's game state (movies got "Install")
+            readonly property bool gReady: (session.selectedHash, session.selectedGameState() === 4)
+            visible: (session.selectedHash, session.selectedIsGame() && session.selectedGameState() !== 5)
+            height: visible ? 36 : 0
+            implicitHeight: height
+            padding: 0
+            onTriggered: gameCtx.gReady ? session.playSelectedGame() : session.installSelectedGame()
+            // same column geometry as CtxItem (icon x:14, text 38) so the
+            // accent header lines up with the rows below it
+            contentItem: Item {
+                IconImg {
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    src: gameCtx.gReady ? "qrc:/icons/play.svg" : "qrc:/icons/download.svg"; tint: Theme.accent; s: 14
+                }
+                Text {
+                    anchors.fill: parent
+                    leftPadding: 38
+                    text: (i18n.language, gameCtx.gReady ? i18n.t("hub_gs_play") : i18n.t("hub_gs_install"))
+                    color: Theme.accent
+                    font.pixelSize: 13; font.weight: Font.DemiBold; font.family: Theme.fontSans
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
+            }
+            background: Rectangle {
+                // full-width band: top corners follow the card's radius
+                radius: 0
+                topLeftRadius: 8; topRightRadius: 8
+                color: gameCtx.highlighted
+                       ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.18)
+                       : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.07)
+                Behavior on color { ColorAnimation { duration: 80 } }
+            }
+        }
+        // Play leads the menu as a minimalist accent button (not a plain row) so
+        // the primary action for a video torrent stands out at a glance.
+        MenuItem {
+            id: playCtx
+            visible: session.selectedHasVideo
+            height: visible ? 36 : 0
+            implicitHeight: height
+            padding: 0
+            onTriggered: session.playSelected()
+            contentItem: Item {
+                IconImg {
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    src: "qrc:/icons/play.svg"; tint: Theme.accent; s: 14
+                }
+                Text {
+                    anchors.fill: parent
+                    leftPadding: 38
+                    text: (i18n.language, i18n.t("ctx_play"))
+                    color: Theme.accent
+                    font.pixelSize: 13; font.weight: Font.DemiBold; font.family: Theme.fontSans
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
+            }
+            background: Rectangle {
+                radius: 0
+                topLeftRadius: 8; topRightRadius: 8
+                color: playCtx.highlighted
+                       ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.18)
+                       : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.07)
+                Behavior on color { ColorAnimation { duration: 80 } }
+            }
+        }
 
         // Common actions stay one click; the rest is grouped into submenus so
         // the menu doesn't run the whole height of the screen.
-        CtxItem { text: (i18n.language, i18n.t("tb_pause")); enabled: !session.selectedPaused; onTriggered: session.pauseSelected() }
-        CtxItem { text: (i18n.language, i18n.t("tb_resume")); enabled: session.selectedPaused; onTriggered: session.resumeSelected() }
-        CtxItem { text: (i18n.language, i18n.t("ctx_open_folder")); onTriggered: session.openSaveFolder() }
-        CtxItem { text: (i18n.language, i18n.t("ctx_copy_path")); onTriggered: session.copySelectedContentPath() }
-        CtxItem { text: (i18n.language, i18n.t("ctx_play")); onTriggered: session.playSelected() }
-        CtxItem { text: (i18n.language, i18n.t("ctx_stream")); onTriggered: session.streamSelected() }
-        CtxItem { text: (i18n.language, i18n.t("ctx_rename")); onTriggered: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }, !session.selectedIsFolder()) }
+        CtxItem { iconSrc: "qrc:/icons/pause.svg"; text: (i18n.language, i18n.t("ctx_pause_download")); enabled: !session.selectedPaused; onTriggered: session.pauseSelected() }
+        CtxItem {
+            // a completed torrent has no download to resume — what this action
+            // actually does there is put it back to seeding; say so
+            readonly property bool seedAgain: session.selectedDataDone || session.selectedCompleted
+            iconSrc: seedAgain ? "qrc:/icons/upload.svg" : "qrc:/icons/play.svg"
+            text: (i18n.language, seedAgain ? i18n.t("ctx_seed_again") : i18n.t("ctx_resume_download"))
+            enabled: session.selectedPaused
+            onTriggered: session.resumeSelected()
+        }
+        CtxItem { iconSrc: "qrc:/icons/open.svg"; text: (i18n.language, i18n.t("ctx_open_folder")); onTriggered: session.openSaveFolder() }
+        CtxItem { iconSrc: "qrc:/icons/copy.svg"; text: (i18n.language, i18n.t("ctx_copy_path")); onTriggered: session.copySelectedContentPath() }
+        CtxItem {
+            visible: Qt.platform.os === "windows"
+            height: visible ? implicitHeight : 0
+            iconSrc: "qrc:/icons/lock.svg"
+            text: (i18n.language, i18n.t("ctx_defender_exclude"))
+            onTriggered: session.excludeTorrentFromDefender(torrentFilter.mapToSource(win.selected))
+        }
+        CtxItem {
+            visible: session.selectedHasArchives
+            height: visible ? implicitHeight : 0
+            iconSrc: "qrc:/icons/download.svg"
+            text: (i18n.language, i18n.t("ctx_extract"))
+            onTriggered: inputPrompt.openWith(i18n.t("ctx_extract"), i18n.t("extract_password_label"),
+                                              "", i18n.t("extract_password_ph"),
+                                              function(pw){ session.extractSelected(pw) })
+        }
+        CtxItem { iconSrc: "qrc:/icons/pencil.svg"; text: (i18n.language, i18n.t("ctx_rename")); onTriggered: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }) }
+        CtxItem {
+            // only once the data is done — marking mid-download freezes the torrent
+            visible: session.selectedDataDone || session.selectedCompleted
+            height: visible ? implicitHeight : 0
+            iconSrc: "qrc:/icons/check.svg"
+            text: session.selectedCompleted ? (i18n.language, i18n.t("ctx_unmark_completed_plain")) : (i18n.language, i18n.t("ctx_mark_completed_plain"))
+            onTriggered: session.selectedCompleted ? session.unmarkSelectedCompleted() : session.markSelectedCompleted()
+        }
         Sep {}
 
         Menu {
@@ -422,7 +636,6 @@ Window {
             CtxItem { text: (i18n.language, i18n.t("ctx_force_reannounce")); onTriggered: session.forceReannounceSelected() }
             CtxItem { text: (i18n.language, i18n.t("ctx_export_torrent")); onTriggered: exportTorrentDlg.open() }
             CtxItem { text: (i18n.language, i18n.t("ctx_why_slow")); onTriggered: { diagnoseDlg.body = session.diagnoseSelectedSlow(); diagnoseDlg.open() } }
-            CtxItem { text: session.selectedCompleted ? (i18n.language, i18n.t("ctx_unmark_completed_plain")) : (i18n.language, i18n.t("ctx_mark_completed_plain")); onTriggered: session.selectedCompleted ? session.unmarkSelectedCompleted() : session.markSelectedCompleted() }
             CtxItem { text: (i18n.language, i18n.t("ctx_stop_seeding")); onTriggered: session.stopSeedingSelected() }
             Menu {
                 title: (i18n.language, i18n.t("ctx_seed_rules"))
@@ -435,14 +648,14 @@ Window {
             }
         }
         Sep {}
-        CtxItem { text: (i18n.language, i18n.t("ctx_remove")); onTriggered: removeDlg.open() }
+        CtxItem { iconSrc: "qrc:/icons/trash.svg"; destructive: true; implicitHeight: enabled ? 34 : 1; text: (i18n.language, i18n.t("ctx_remove")); onTriggered: removeDlg.open() }
     }
 
     Shortcut { sequence: StandardKey.SelectAll; onActivated: win.selectAll() }
     // Smart Paste: Ctrl+V adds a magnet / 40-char hash / .torrent URL straight from
     // the clipboard — unless a text field has focus (then let it paste text).
     Shortcut {
-        sequence: StandardKey.Paste
+        sequences: [ StandardKey.Paste ]
         onActivated: {
             var f = win.activeFocusItem
             if (f && f.cursorPosition !== undefined) return
@@ -464,6 +677,7 @@ Window {
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_open_torrent")); shortcut: StandardKey.Open; onTriggered: openFileDlg.open() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_add_magnet")); shortcut: "Ctrl+M"; onTriggered: magnetDlg.open() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_add_url")); shortcut: "Ctrl+U"; onTriggered: inputPrompt.openWith(i18n.t("menu_add_url"), i18n.t("prompt_torrent_url"), "", "https://…/file.torrent", function(t){ if (t.length > 0) session.addTorrentUrl(t) }) }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_add_http")); shortcut: "Ctrl+D"; onTriggered: promptHttpDownload() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_create_torrent")); onTriggered: createDlg.open() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_inspect_torrent")); onTriggered: inspectFileDlg.open() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_import_qbt")); onTriggered: importQbtDlg.open() }
@@ -480,16 +694,16 @@ Window {
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_pause_all")); onTriggered: if (typeof session !== "undefined") session.pauseAll() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_resume_all")); onTriggered: if (typeof session !== "undefined") session.resumeAll() }
             Platform.MenuSeparator {}
-            Platform.MenuItem { text: (i18n.language, i18n.t("menu_remove")); enabled: win.hasSel; onTriggered: removeDlg.open() }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_remove")); shortcut: StandardKey.Delete; enabled: win.hasSel; onTriggered: removeDlg.open() }
         }
         Platform.Menu {
             title: (i18n.language, i18n.t("menu_settings_title"))
-            Platform.MenuItem { text: (i18n.language, i18n.t("menu_preferences")); shortcut: StandardKey.Preferences; onTriggered: win.showWin(settingsWinLoader) }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_preferences")); shortcut: StandardKey.Preferences; onTriggered: win.currentPage = 3 }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_addons")); onTriggered: addAddonDlg.open() }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_rss")); onTriggered: win.showWin(rssWinLoader) }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_pair")); onTriggered: { pairingDlg.reload(); pairingDlg.open() } }
             Platform.MenuSeparator {}
-            Platform.MenuItem { text: (i18n.language, i18n.t("menu_search_torrents")); onTriggered: navRail.currentIndex = 2 }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_search_torrents")); onTriggered: win.currentPage = 1 }
             Platform.MenuSeparator {}
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_statistics")); onTriggered: win.showWin(statsWinLoader) }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_speedtest")); onTriggered: Qt.openUrlExternally("https://fast.com") }
@@ -507,6 +721,7 @@ Window {
                 enabled: typeof updater !== "undefined" && updater !== null
                 onTriggered: if (typeof updater !== "undefined" && updater) updater.check(false)
             }
+            Platform.MenuItem { text: (i18n.language, i18n.t("menu_feedback")); onTriggered: Qt.openUrlExternally("https://docs.google.com/forms/d/e/1FAIpQLScdwLxWC-LB4wLuMI6_D3-QNPLNJPpzbob5LU0Y2yMnhaBFrg/viewform") }
             Platform.MenuSeparator {}
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_donate")); onTriggered: Qt.openUrlExternally("https://github.com/sponsors/Mateuscruz19") }
             Platform.MenuItem { text: (i18n.language, i18n.t("menu_about")); role: Platform.MenuItem.AboutRole; onTriggered: aboutDlg.open() }
@@ -526,29 +741,18 @@ Window {
                      ? "image://applogo/dark?v=l" : "image://applogo/light?v=d"
         icon.mask: false
         tooltip: "BATorrent"
-        // This build doesn't auto-pop the assigned `menu` on right-click, but it
-        // does fire activated(Context) reliably — so open the menu explicitly.
+        // Right-click shows our custom painted popup (TrayPopupWindow) on EVERY
+        // platform. The native Qt.labs `menu` is intentionally not used: it never
+        // popped on the Windows tray here, and the painted popup is the design we
+        // want anyway. Left/double click restores the window.
         onActivated: function(reason) {
             if (reason === Platform.SystemTrayIcon.Trigger
                 || reason === Platform.SystemTrayIcon.DoubleClick) {
                 win.show(); win.raise(); win.requestActivate()
             } else if (reason === Platform.SystemTrayIcon.Context) {
-                trayMenu.open()
+                trayPopup.popUpAt(trayIcon.geometry)
             }
         }
-    }
-
-    Platform.Menu {
-        id: trayMenu
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_show"));         onTriggered: { win.show(); win.raise(); win.requestActivate() } }
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_open_torrent")); onTriggered: { win.show(); win.raise(); win.requestActivate(); openFileDlg.open() } }
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_open_magnet"));  onTriggered: { win.show(); win.raise(); win.requestActivate(); magnetDlg.open() } }
-        Platform.MenuSeparator {}
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_pause_all"));    onTriggered: if (typeof session !== "undefined") session.pauseAll() }
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_resume_all"));   onTriggered: if (typeof session !== "undefined") session.resumeAll() }
-        Platform.MenuSeparator {}
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_preferences"));  onTriggered: win.showWin(settingsWinLoader) }
-        Platform.MenuItem { text: (i18n.language, i18n.t("tray_quit"));         onTriggered: Qt.quit() }
     }
 
     // Background events → in-app toast (when the window is up) AND the native
@@ -588,34 +792,74 @@ Window {
         target: typeof session !== "undefined" ? session : null
         ignoreUnknownSignals: true
         function onToast(title, body) { win.notifyUser(title, body, 0) }
+        // a movie/series finished downloading → actionable "Play now" toast
+        function onMovieReady(infoHash, name) {
+            if (win.visible && win.visibility !== Window.Minimized && win.visibility !== Window.Hidden)
+                toastHost.show(i18n.t("toast_movie_ready"), name, 3, "play:" + infoHash, i18n.t("toast_play_now"))
+            else
+                win.notifyUser(i18n.t("toast_movie_ready"), name, 3)
+        }
     }
+
+    // Own schema instance so the palette can index individual options — it's
+    // available before SettingsView is built, avoiding a binding-order race.
+    SettingsSchema { id: paletteSchema }
 
     // Ctrl/⌘+K command palette — actions + torrent jump
     CommandPalette {
         id: cmdPalette
         actions: {
             var l = i18n.language   // re-evaluate labels on language switch
-            return [
+            var acts = [
                 { label: i18n.t("magnet_title"), run: function() { magnetDlg.open() } },
                 { label: i18n.t("menu_open_torrent"), run: function() { openFileDlg.open() } },
                 { label: i18n.t("menu_create_torrent"), run: function() { createDlg.open() } },
                 { label: i18n.t("menu_pause_all"), run: function() { if (typeof session !== "undefined") session.pauseAll() } },
                 { label: i18n.t("menu_resume_all"), run: function() { if (typeof session !== "undefined") session.resumeAll() } },
                 { label: i18n.t("tb_alt_speed"), hint: i18n.t("palette_hint_toggle"), run: function() { if (typeof session !== "undefined") session.setAltSpeedsActive(!session.altSpeedsActive) } },
-                { label: i18n.t("nav_downloads"), hint: i18n.t("palette_hint_page"), run: function() { navRail.currentIndex = 0 } },
-                { label: i18n.t("nav_discover"), hint: i18n.t("palette_hint_page"), run: function() { navRail.currentIndex = 1 } },
-                { label: i18n.t("nav_search"), hint: i18n.t("palette_hint_page"), run: function() { navRail.currentIndex = 2 } },
-                { label: i18n.t("nav_hub"), hint: i18n.t("palette_hint_page"), run: function() { navRail.currentIndex = 3 } },
-                { label: i18n.t("tb_settings"), run: function() { win.showWin(settingsWinLoader) } },
+                { label: i18n.t("nav_downloads"), hint: i18n.t("palette_hint_page"), run: function() { win.currentPage = 0 } },
+                { label: i18n.t("nav_find"), hint: i18n.t("palette_hint_page"), run: function() { win.currentPage = 1 } },
+                { label: i18n.t("nav_hub"), hint: i18n.t("palette_hint_page"), run: function() { win.currentPage = 2 } },
+                { label: i18n.t("tb_settings"), run: function() { win.currentPage = 3 } },
                 { label: i18n.t("menu_rss"), run: function() { win.showWin(rssWinLoader) } },
                 { label: i18n.t("menu_statistics"), run: function() { win.showWin(statsWinLoader) } },
+                { label: i18n.t("wrapped_title"), run: function() { win.showWrapped() } },
                 { label: i18n.t("menu_logs"), run: function() { win.showWin(logWinLoader) } },
                 { label: i18n.t("menu_diagnostics"), run: function() { win.showWin(diagWinLoader) } },
                 { label: i18n.t("shortcuts_title2"), run: function() { win.showWin(shortcutsWinLoader) } }
             ]
+            // settings sections + a few high-value deep links — so "torrent search",
+            // "proxy", "network", etc. are reachable straight from the palette
+            var setNav = ["detail_general", "detail_kv_speed", "settings_network", "set_nav_vpn",
+                          "set_nav_proxy", "set_nav_webui", "set_nav_notif", "set_nav_addons", "settings_advanced"]
+            for (var si = 0; si < setNav.length; ++si) {
+                (function(idx) {
+                    acts.push({ label: i18n.t("tb_settings") + " · " + i18n.t(setNav[idx]),
+                                hint: i18n.t("palette_hint_page"),
+                                run: function() { settingsPage.sec = idx; win.currentPage = 3 } })
+                })(si)
+            }
+            acts.push({ label: i18n.t("set_grp_torrent_search"), hint: i18n.t("tb_settings"),
+                        run: function() { settingsPage.sec = 7; win.currentPage = 3 } })
+            // individual settings options — so Ctrl+K finds "Memory guard",
+            // "Preallocate", etc., not just the section. Jumps to the option via
+            // the Settings search box.
+            var secs = paletteSchema.sections
+            for (var ps = 0; ps < secs.length; ++ps) {
+                for (var pf = 0; pf < secs[ps].length; ++pf) {
+                    var fld = secs[ps][pf]
+                    if (!fld.label || fld.type === "group" || fld.type === "warning") continue
+                    (function(sectionIdx, field) {
+                        acts.push({ label: i18n.t("tb_settings") + " · " + field.label,
+                                    hint: i18n.t("palette_hint_page"),
+                                    run: function() { win.currentPage = 3; settingsPage.sec = sectionIdx; settingsPage.searchFor(field.label) } })
+                    })(ps, fld)
+                }
+            }
+            return acts
         }
         onTorrentPicked: function(src) {
-            navRail.currentIndex = 0
+            win.currentPage = 0
             if (typeof torrentFilter === "undefined") return
             var p = torrentFilter.mapFromSource(src)
             if (p < 0) { win.setFilter("all"); p = torrentFilter.mapFromSource(src) }
@@ -623,6 +867,16 @@ Window {
         }
     }
     Shortcut { sequence: "Ctrl+K"; onActivated: cmdPalette.toggle() }
+
+    // "Preparing to watch" overlay for the one-click Get & Watch flow
+    GetWatchOverlay {
+        id: gwOverlay
+        onCanceled: {
+            if (typeof debrid !== "undefined" && debrid.busy) debrid.cancelStream()
+            else if (phase === "searching") { if (typeof search !== "undefined") search.cancelGetAndWatch() }
+            else if (hash !== "" && typeof session !== "undefined") session.cancelWatch(hash)
+        }
+    }
 
     // custom toast cards, pinned to the screen's bottom-right (native-like)
     ToastOverlay {
@@ -632,7 +886,9 @@ Window {
             else if (actionId === "crashreport" && typeof logs !== "undefined")
                 Qt.openUrlExternally(logs.crashReportUrl())
             else if (actionId === "star")
-                Qt.openUrlExternally("https://github.com/coex177/BATorrent")
+                Qt.openUrlExternally("https://github.com/BATorrent-app/BATorrent")
+            else if (actionId.indexOf("play:") === 0 && typeof session !== "undefined")
+                session.playByHash(actionId.substring(5))
         }
     }
 
@@ -672,201 +928,18 @@ Window {
         }
     }
 
+    TrayPopupWindow {
+        id: trayPopup
+        onShowApp:      { win.show(); win.raise(); win.requestActivate() }
+        onOpenTorrent:  { win.show(); win.raise(); win.requestActivate(); openFileDlg.open() }
+        onOpenMagnet:   { win.show(); win.raise(); win.requestActivate(); magnetDlg.open() }
+        onPauseAll:     if (typeof session !== "undefined") session.pauseAll()
+        onResumeAll:    if (typeof session !== "undefined") session.resumeAll()
+        onOpenSettings: { win.show(); win.raise(); win.requestActivate(); win.currentPage = 3 }
+        onQuitApp:      Qt.quit()
+    }
+
     // (IconImg vem de widgets/)
-
-    // ----- reusable toolbar button (.tbtn) -----
-    component TBtn: Rectangle {
-        id: tb
-        property string label
-        property string icon
-        property bool disabled: false
-        property bool active: false       // toggled-on state (e.g. alt-speed turtle)
-        signal clicked()
-        Layout.preferredWidth: 52
-        Layout.minimumWidth: 52          // never let the RowLayout squeeze/clip the button
-        Layout.preferredHeight: 54
-        color: !disabled && tbMa.containsMouse ? Theme.hover : "transparent"
-        radius: 8
-        opacity: disabled ? 0.35 : 1.0
-
-        activeFocusOnTab: !disabled
-        Keys.onReturnPressed: if (!disabled) tb.clicked()
-        Keys.onSpacePressed: if (!disabled) tb.clicked()
-        scale: tbMa.pressed && !tb.disabled ? Theme.pressScale : 1
-        Behavior on scale { NumberAnimation { duration: Theme.durFast; easing.type: Easing.OutCubic } }
-        Rectangle {
-            visible: tb.activeFocus
-            anchors.fill: parent
-            anchors.margins: -2
-            radius: 10
-            color: "transparent"
-            border.color: Theme.focusRing
-            border.width: Theme.focusRingWidth
-        }
-
-        Column {
-            anchors.centerIn: parent
-            spacing: 3
-            IconImg {
-                anchors.horizontalCenter: parent.horizontalCenter
-                src: tb.icon
-                tint: tb.active ? Theme.accent : (!tb.disabled && tbMa.containsMouse ? Theme.t1 : Theme.t3)
-                s: 18
-            }
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: tb.label
-                color: tb.active ? Theme.accent : (!tb.disabled && tbMa.containsMouse ? Theme.t1 : Theme.t3)
-                font.pixelSize: 11
-                font.family: Theme.fontSans
-                font.weight: Font.Medium
-            }
-        }
-        MouseArea {
-            id: tbMa
-            anchors.fill: parent
-            hoverEnabled: !tb.disabled
-            cursorShape: tb.disabled ? Qt.ArrowCursor : Qt.PointingHandCursor
-            onClicked: if (!tb.disabled) tb.clicked()
-        }
-    }
-
-    // ----- vertical divider between toolbar groups (.tgrp + .tgrp) -----
-    component TGrpDiv: Rectangle {
-        Layout.preferredWidth: 1
-        Layout.preferredHeight: 26
-        Layout.leftMargin: 8
-        Layout.rightMargin: 8
-        Layout.alignment: Qt.AlignVCenter
-        color: Theme.hair
-    }
-
-    // ----- pill (filter) -----
-    component Pill: Rectangle {
-        id: pi
-        property string label
-        property string count
-        property string state: "all"
-        property bool on: win.activeFilter === state
-        signal clicked()
-        radius: 8
-        height: 30
-        implicitWidth: pillRow.implicitWidth + 26
-        color: on ? Theme.accentTint : (piMa.containsMouse ? Theme.hover : "transparent")
-
-        activeFocusOnTab: true
-        Keys.onReturnPressed: pi.clicked()
-        Keys.onSpacePressed: pi.clicked()
-        scale: piMa.pressed ? Theme.pressScale : 1
-        Behavior on scale { NumberAnimation { duration: Theme.durFast; easing.type: Easing.OutCubic } }
-        Rectangle {
-            visible: pi.activeFocus
-            anchors.fill: parent
-            anchors.margins: -2
-            radius: 10
-            color: "transparent"
-            border.color: Theme.focusRing
-            border.width: Theme.focusRingWidth
-        }
-
-        Row {
-            id: pillRow
-            anchors.centerIn: parent
-            spacing: 7
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: pi.label
-                color: pi.on ? Theme.accentText : (piMa.containsMouse ? Theme.t2 : Theme.t3)
-                font.pixelSize: 12
-                font.family: Theme.fontSans
-                font.weight: Font.Medium
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: pi.count
-                color: pi.on ? Theme.accentText : Theme.t4
-                font.pixelSize: 11
-                font.family: Theme.fontMono
-            }
-        }
-        MouseArea {
-            id: piMa
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: pi.clicked()
-        }
-    }
-
-    // one segment of the Grid/List/Compact view toggle
-    component ViewSeg: Rectangle {
-        id: vseg
-        property string mode
-        property string icon
-        property string label
-        readonly property bool active: win.viewMode === mode
-        implicitWidth: vsegRow.implicitWidth + 22
-        height: 28
-        radius: 6
-        color: active ? Qt.rgba(1,1,1,0.08) : "transparent"
-        Row {
-            id: vsegRow
-            anchors.centerIn: parent
-            spacing: 6
-            IconImg {
-                anchors.verticalCenter: parent.verticalCenter
-                src: vseg.icon
-                tint: vseg.active ? Theme.t1 : Theme.t3
-                s: 14
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: vseg.label
-                color: vseg.active ? Theme.t1 : Theme.t3
-                font.pixelSize: 12
-                font.weight: Font.Medium
-                font.family: Theme.fontSans
-            }
-        }
-        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: win.setViewMode(vseg.mode) }
-    }
-
-    // ----- clickable list header column (sort) -----
-    component HCol: Item {
-        id: hc
-        property string label
-        property string col
-        property bool fill: false
-        property int w: 78
-        property bool alignRight: false
-        Layout.fillWidth: fill
-        Layout.preferredWidth: fill ? -1 : w
-        Layout.fillHeight: true
-        Row {
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.left: hc.alignRight ? undefined : parent.left
-            anchors.right: hc.alignRight ? parent.right : undefined
-            spacing: 4
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: hc.label
-                // anime art sits behind the right columns — lift the weak grey + a contrasting
-                // outline so headers stay legible over both dark and bright parts of the art
-                color: win.sortColumn === hc.col ? Theme.t2 : (hcMa.containsMouse ? Theme.t3 : (Theme.hasAnime ? Theme.t2 : Theme.t4))
-                style: Theme.hasAnime ? Text.Outline : Text.Normal
-                styleColor: Theme.isLight ? "#ffffff" : "#000000"
-                font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.6; font.family: Theme.fontSans
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: win.sortColumn === hc.col
-                text: win.sortAsc ? "▲" : "▼"
-                color: Theme.accent
-                font.pixelSize: 7
-            }
-        }
-        MouseArea { id: hcMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: win.toggleSort(hc.col) }
-    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -885,7 +958,7 @@ Window {
             Layout.preferredHeight: visible ? implicitHeight : 0
 
             background: Rectangle {
-                color: Theme.elev
+                color: Theme.panel
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
             }
             delegate: MenuBarItem {
@@ -932,6 +1005,7 @@ Window {
                 title: (i18n.language, i18n.t("menu_file_title"))
                 BarItem { text: (i18n.language, i18n.t("menu_open_torrent")); onTriggered: openFileDlg.open() }
                 BarItem { text: (i18n.language, i18n.t("menu_add_magnet")); onTriggered: magnetDlg.open() }
+                BarItem { text: (i18n.language, i18n.t("menu_add_http")); onTriggered: promptHttpDownload() }
                 BarItem { text: (i18n.language, i18n.t("menu_create_torrent")); onTriggered: createDlg.open() }
                 BarItem { text: (i18n.language, i18n.t("menu_inspect_torrent")); onTriggered: inspectFileDlg.open() }
                 BarItem { text: (i18n.language, i18n.t("menu_import_qbt")); onTriggered: importQbtDlg.open() }
@@ -952,12 +1026,12 @@ Window {
             }
             BarMenu {
                 title: (i18n.language, i18n.t("menu_settings_title"))
-                BarItem { text: (i18n.language, i18n.t("menu_preferences")); onTriggered: win.showWin(settingsWinLoader) }
+                BarItem { text: (i18n.language, i18n.t("menu_preferences")); onTriggered: win.currentPage = 3 }
                 BarItem { text: (i18n.language, i18n.t("menu_addons")); onTriggered: addAddonDlg.open() }
                 BarItem { text: (i18n.language, i18n.t("menu_rss")); onTriggered: win.showWin(rssWinLoader) }
                 BarItem { text: (i18n.language, i18n.t("menu_pair")); onTriggered: { pairingDlg.reload(); pairingDlg.open() } }
                 BarSep {}
-                BarItem { text: (i18n.language, i18n.t("menu_search_torrents")); onTriggered: navRail.currentIndex = 2 }
+                BarItem { text: (i18n.language, i18n.t("menu_search_torrents")); onTriggered: win.currentPage = 1 }
                 BarSep {}
                 BarItem { text: (i18n.language, i18n.t("menu_statistics")); onTriggered: win.showWin(statsWinLoader) }
                 BarItem { text: (i18n.language, i18n.t("menu_speedtest")); onTriggered: Qt.openUrlExternally("https://fast.com") }
@@ -975,29 +1049,55 @@ Window {
                     enabled: typeof updater !== "undefined" && updater !== null
                     onTriggered: if (typeof updater !== "undefined" && updater) updater.check(false)
                 }
+                BarItem { text: (i18n.language, i18n.t("menu_feedback")); onTriggered: Qt.openUrlExternally("https://docs.google.com/forms/d/e/1FAIpQLScdwLxWC-LB4wLuMI6_D3-QNPLNJPpzbob5LU0Y2yMnhaBFrg/viewform") }
                 BarSep {}
                 BarItem { text: (i18n.language, i18n.t("menu_donate")); onTriggered: Qt.openUrlExternally("https://github.com/sponsors/Mateuscruz19") }
                 BarItem { text: (i18n.language, i18n.t("menu_about")); onTriggered: aboutDlg.open() }
             }
         }
 
-        // ===== nav rail + content stack (4.0 hub shell) =====
+        // ===== top nav bar (default layout) =====
+        Loader {
+            id: navBarLoader
+            Layout.fillWidth: true
+            active: !win.layoutClassic
+            visible: active
+            sourceComponent: NavBar {
+                currentIndex: win.currentPage
+                showDownloadChip: win.showDownloadChip
+                onPageRequested: function(page) { win.currentPage = page }
+                onSettingsClicked: win.currentPage = 3
+                onSelectTorrent: function(infoHash) { win.selectTorrentByHash(infoHash) }
+                onMakeRoomRequested: { makeRoomPanel.targetBytes = 0; makeRoomPanel.open = true }
+            }
+        }
+
+        // ===== nav rail (classic layout) + content stack (4.0 hub shell) =====
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
 
-            NavRail {
-                id: navRail
+            Loader {
+                id: navRailLoader
                 Layout.fillHeight: true
-                onSettingsClicked: win.showWin(settingsWinLoader)
+                active: win.layoutClassic
+                visible: active
+                sourceComponent: NavRail {
+                    currentIndex: win.currentPage
+                    showDownloadChip: win.showDownloadChip
+                    onPageRequested: function(page) { win.currentPage = page }
+                    onSettingsClicked: win.currentPage = 3
+                    onSelectTorrent: function(infoHash) { win.selectTorrentByHash(infoHash) }
+                    onMakeRoomRequested: { makeRoomPanel.targetBytes = 0; makeRoomPanel.open = true }
+                }
             }
 
             StackLayout {
                 id: contentStack
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                currentIndex: navRail.currentIndex
+                currentIndex: win.currentPage
 
                 // premium page switch: the new page fades + rises in
                 transform: Translate { id: pageShift }
@@ -1017,1578 +1117,69 @@ Window {
                     Layout.fillHeight: true
 
         // ================== TOOLBAR ==================
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 66
-            color: Theme.elev
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.sp4
-                anchors.rightMargin: Theme.sp4
-                spacing: Theme.sp2
-
-                // brand moved to the nav rail; toolbar starts at the actions
-                // G1: Abrir, Magnet
-                TBtn { id: tbOpen; label: (i18n.language, i18n.t("tb_open"));   icon: "qrc:/icons/open.svg";  onClicked: openFileDlg.open() }
-                TBtn { label: (i18n.language, i18n.t("tb_magnet"));  icon: "qrc:/icons/magnet.svg"; onClicked: magnetDlg.open() }
-                TGrpDiv {}
-                // G2: Pausar, Retomar, Parar
-                TBtn { label: (i18n.language, i18n.t("tb_pause"));  icon: "qrc:/icons/pause.svg"; disabled: !win.hasSel; onClicked: session.pauseSelected() }
-                TBtn { label: (i18n.language, i18n.t("tb_resume")); icon: "qrc:/icons/play.svg";  disabled: !win.hasSel; onClicked: session.resumeSelected() }
-                TBtn { label: (i18n.language, i18n.t("tb_stop"));   icon: "qrc:/icons/stop.svg";  disabled: !win.hasSel; onClicked: session.pauseSelected() }
-                TGrpDiv {}
-                // G3: Remover
-                TBtn { label: (i18n.language, i18n.t("tb_remove")); icon: "qrc:/icons/trash.svg"; disabled: !win.hasSel; onClicked: removeDlg.open() }
-                TGrpDiv {}
-                // G4: Buscar, RSS
-                TBtn { label: (i18n.language, i18n.t("tb_search"));  icon: "qrc:/icons/search.svg"; onClicked: navRail.currentIndex = 2 }
-                TBtn { label: (i18n.language, i18n.t("tb_rss"));     icon: "qrc:/icons/rss.svg";    onClicked: win.showWin(rssWinLoader) }
-                TGrpDiv {}
-                // G5: Config.
-                TBtn { label: (i18n.language, i18n.t("tb_settings")); icon: "qrc:/icons/settings.svg"; onClicked: win.showWin(settingsWinLoader) }
-
-
-                // .tb-spacer
-                Item { Layout.fillWidth: true }
-
-                // .spd-mod (border hair, radius 9, 2 cols)
-                Rectangle {
-                    Layout.preferredHeight: 44
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitWidth: spdRow.width + 0
-                    color: "transparent"
-                    border.color: Theme.hair
-                    border.width: 1
-                    radius: 9
-
-                    Row {
-                        id: spdRow
-                        anchors.centerIn: parent
-                        spacing: 0
-
-                        // .c Download
-                        Item {
-                            width: dlCol.implicitWidth + 28
-                            height: 44
-                            Column {
-                                id: dlCol
-                                anchors.centerIn: parent
-                                spacing: 3
-                                Text {
-                                    text: (i18n.language, i18n.t("graph_download"))
-                                    color: Theme.t4
-                                    font.pixelSize: 9
-                                    font.weight: Font.Bold
-                                    font.letterSpacing: 1
-                                    font.family: Theme.fontSans
-                                }
-                                Row {
-                                    spacing: 5
-                                    IconImg {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        src: "qrc:/icons/download.svg"
-                                        tint: Theme.accentText
-                                        s: 12
-                                    }
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: typeof session !== "undefined" ? session.totalDownSpeed : "0 KB/s"
-                                        color: Theme.accentText
-                                        font.pixelSize: 13
-                                        font.weight: Font.Bold
-                                        font.family: Theme.fontMono
-                                    }
-                                }
-                            }
-                        }
-                        // divider .c + .c
-                        Rectangle { width: 1; height: 44; color: Theme.hair }
-                        // .c Upload
-                        Item {
-                            width: upCol.implicitWidth + 28
-                            height: 44
-                            Column {
-                                id: upCol
-                                anchors.centerIn: parent
-                                spacing: 3
-                                Text {
-                                    text: (i18n.language, i18n.t("graph_upload"))
-                                    color: Theme.t4
-                                    font.pixelSize: 9
-                                    font.weight: Font.Bold
-                                    font.letterSpacing: 1
-                                    font.family: Theme.fontSans
-                                }
-                                Row {
-                                    spacing: 5
-                                    IconImg {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        src: "qrc:/icons/upload.svg"
-                                        tint: Theme.up
-                                        s: 12
-                                    }
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: typeof session !== "undefined" ? session.totalUpSpeed : "0 KB/s"
-                                        color: Theme.up
-                                        font.pixelSize: 13
-                                        font.family: Theme.fontMono
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        Toolbar {
+            id: toolbar
+            win: win
+            onOpenFile: openFileDlg.open()
+            onAddMagnet: magnetDlg.open()
+            onAddLink: promptHttpDownload()
+            onRemoveSelected: removeDlg.open()
+            onOpenRss: win.showWin(rssWinLoader)
+            onNavigate: function(index) { win.currentPage = index }
         }
 
         // ================== SUBBAR ==================
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 54
-            color: "transparent"
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.sp4
-                anchors.rightMargin: Theme.sp4
-                spacing: Theme.sp3
-
-                // .search (240×34, padding 0 11, gap 8, bg panel) — the one
-                // element that absorbs the shrink: it gives back width down to
-                // 150 so the pills/category never have to clip.
-                Rectangle {
-                    Layout.preferredWidth: 240
-                    Layout.minimumWidth: 150
-                    Layout.preferredHeight: 34
-                    Layout.alignment: Qt.AlignVCenter
-                    color: Theme.panel
-                    border.color: searchInput.activeFocus ? Theme.accent : Theme.hair
-                    border.width: 1
-                    radius: 8
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 11
-                        anchors.rightMargin: 11
-                        spacing: 8
-                        IconImg {
-                            Layout.alignment: Qt.AlignVCenter
-                            src: "qrc:/icons/search.svg"
-                            tint: Theme.t4
-                            s: 14
-                        }
-                        TextInput {
-                            id: searchInput
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            verticalAlignment: TextInput.AlignVCenter
-                            color: Theme.t1
-                            font.pixelSize: 13
-                            font.family: Theme.fontSans
-                            clip: true
-                            // debounce: re-filtering the whole list on every
-                            // keystroke stutters with a large library
-                            onTextChanged: searchDebounce.restart()
-                            Timer {
-                                id: searchDebounce
-                                interval: 150
-                                onTriggered: if (typeof torrentFilter !== "undefined") torrentFilter.setSearchText(searchInput.text)
-                            }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: (i18n.language, i18n.t("search_heading"))
-                                color: Theme.t4
-                                font: searchInput.font
-                                visible: searchInput.text.length === 0 && !searchInput.activeFocus
-                            }
-                        }
-                    }
-                }
-
-                // .seg (toggle Grade/Lista) — padding 2, bg panel
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.preferredHeight: 32
-                    Layout.minimumWidth: implicitWidth      // never clip the toggle
-                    implicitWidth: segRow.implicitWidth + 4
-                    color: Theme.panel
-                    border.color: Theme.hair
-                    border.width: 1
-                    radius: 8
-
-                    Row {
-                        id: segRow
-                        anchors.centerIn: parent
-                        spacing: 2
-
-                        ViewSeg { mode: "grid";    icon: "qrc:/icons/grid.svg";    label: (i18n.language, i18n.t("view_grid")) }
-                        ViewSeg { mode: "list";    icon: "qrc:/icons/list.svg";    label: (i18n.language, i18n.t("view_list")) }
-                        ViewSeg { mode: "compact"; icon: "qrc:/icons/compact.svg"; label: (i18n.language, i18n.t("view_compact")) }
-                    }
-                }
-
-                // .pills (gap 4) — 6 pills, counts from session, click sets filter
-                Row {
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.minimumWidth: implicitWidth      // pills never clip
-                    spacing: Theme.sp1
-                    Pill { label: (i18n.language, i18n.t("filter_all"));     state: "all";         count: typeof session !== "undefined" ? session.torrentCount : 0;     onClicked: win.setFilter("all") }
-                    Pill { label: (i18n.language, i18n.t("filter_all_active"));    state: "active";      count: typeof session !== "undefined" ? session.activeCount : 0;      onClicked: win.setFilter("active") }
-                    Pill { label: (i18n.language, i18n.t("filter_downloading"));  state: "downloading"; count: typeof session !== "undefined" ? session.downloadingCount : 0; onClicked: win.setFilter("downloading") }
-                    Pill { label: (i18n.language, i18n.t("filter_seeding"));  state: "seeding";     count: typeof session !== "undefined" ? session.seedingCount : 0;     onClicked: win.setFilter("seeding") }
-                    Pill { label: (i18n.language, i18n.t("filter_paused"));   state: "paused";      count: typeof session !== "undefined" ? session.pausedCount : 0;      onClicked: win.setFilter("paused") }
-                    Pill { label: (i18n.language, i18n.t("filter_completed")); state: "completed";   count: typeof session !== "undefined" ? session.completedCount : 0;   onClicked: win.setFilter("completed") }
-                }
-
-                Item { Layout.fillWidth: true }
-
-                // .cat (Todas as categorias + chevron)
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.preferredHeight: 34
-                    Layout.minimumWidth: implicitWidth      // never clip the category dropdown
-                    implicitWidth: catRow.implicitWidth + 24
-                    color: "transparent"
-                    border.color: Theme.hair
-                    border.width: 1
-                    radius: 8
-
-                    Row {
-                        id: catRow
-                        anchors.centerIn: parent
-                        spacing: 8
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: win.catFilter.length > 0 ? win.catLabel(win.catFilter) : (i18n.language, i18n.t("filter_all_categories"))
-                            color: win.catFilter.length > 0 ? Theme.t1 : Theme.t2
-                            font.pixelSize: 12
-                            font.family: Theme.fontSans
-                        }
-                        IconImg {
-                            anchors.verticalCenter: parent.verticalCenter
-                            src: "qrc:/icons/chevron.svg"
-                            tint: Theme.t4
-                            s: 13
-                        }
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: catFilterMenu.open()
-                    }
-                    Menu {
-                        id: catFilterMenu
-                        y: parent.height + 4
-                        implicitWidth: 200
-                        delegate: CatItem {}
-                        background: Rectangle { color: Theme.panel; border.color: Theme.hair; border.width: 1; radius: 8 }
-                        CatItem { text: (i18n.language, i18n.t("filter_all_categories")); onTriggered: win.applyCatFilter("") }
-                        MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: Theme.hairSoft } }
-                        CatItem { text: win.catLabel("Apps");   onTriggered: win.applyCatFilter("Apps") }
-                        CatItem { text: win.catLabel("Games");  onTriggered: win.applyCatFilter("Games") }
-                        CatItem { text: win.catLabel("Movies"); onTriggered: win.applyCatFilter("Movies") }
-                        CatItem { text: win.catLabel("Series"); onTriggered: win.applyCatFilter("Series") }
-                    }
-                }
-
-                // donate moved to the nav rail (bottom) — it was cramped here
-                // and got clipped when the filter row filled up.
-                // (the port indicator now lives in the status bar: it's status,
-                // not a filter, and it was the first thing to clip here)
-            }
+        FilterBar {
+            id: filterBar
+            win: win
         }
 
-        // ================== CONTENT (grid OR list) ==================
-        Item {
+        // ================== CONTENT (grid OR list) + grid inspector ==================
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-
-            readonly property bool empty: typeof session !== "undefined" && session.torrentCount === 0
-
-            // full custom background image (z:-1, behind anime art and grid/list).
-            // A theme-bg scrim at user-controlled opacity sits on top for legibility.
-            Item {
-                id: bgImageWrap
-                anchors.fill: parent
-                visible: Theme.hasBgImage && !parent.empty
-                z: -1
-                Image {
-                    anchors.fill: parent
-                    source: Theme.bgImageSource
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                    sourceSize.width: parent.width
-                    sourceSize.height: parent.height
-                    cache: false
-                }
-                Rectangle {
-                    anchors.fill: parent
-                    color: Theme.bg
-                    opacity: Theme.bgImageOpacity
-                }
+            spacing: 0
+            LibraryView {
+                id: libraryView
+                win: win
+                onAddMagnetRequested: magnetDlg.open()
+                onAddLinkRequested: promptHttpDownload()
             }
-
-            // empty state (no torrents)
-            EmptyState {
-                anchors.centerIn: parent
-                visible: parent.empty
-                onOpenClicked: openFileDlg.open()
-                onMagnetClicked: magnetDlg.open()
-            }
-
-
-            // anime art (eyes top-right / spider bottom-right). Ported 1:1 from .eyes-accent:
-            // the CSS fades the edges via two intersected linear masks; since only Theme.bg sits
-            // behind the art, we reproduce it with two bg-colored gradient scrims (left + bottom/top).
-            Item {
-                id: animeArtWrap
-                visible: Theme.hasAnime && !parent.empty
-                width: Math.min(Theme.animeBottom ? 560 : 460, parent.width * 0.46)
-                height: animeArt.implicitWidth > 0 ? animeArt.implicitHeight * (width / animeArt.implicitWidth) : 0
-                anchors.right: parent.right
-                anchors.top: Theme.animeBottom ? undefined : parent.top
-                anchors.bottom: Theme.animeBottom ? parent.bottom : undefined
-                anchors.bottomMargin: Theme.animeBottom ? -80 : 0   // spider sits lower (peeks from bottom)
-                z: 0
-
-                Image {
-                    id: animeArt
-                    anchors.fill: parent
-                    source: Theme.hasAnime ? Theme.animeSource : ""
-                    fillMode: Image.PreserveAspectFit
-                    // list rows put state/peer columns right on top of the art —
-                    // drop it to a watermark there so data wins the contrast fight
-                    opacity: win.gridView ? 0.9 : 0.25
-                    Behavior on opacity { NumberAnimation { duration: Theme.durSlow; easing.type: Easing.OutCubic } }
-                }
-                // fade left edge (mask: linear-gradient(90deg, transparent, #000 55%))
-                Rectangle {
-                    anchors.fill: parent
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: Theme.bg }
-                        GradientStop { position: 0.55; color: "transparent" }
-                    }
-                }
-                // fade bottom (eyes) / top (spider) — mask: linear-gradient(180deg, #000 60%, transparent)
-                Rectangle {
-                    anchors.fill: parent
-                    gradient: Gradient {
-                        orientation: Gradient.Vertical
-                        GradientStop { position: 0.0; color: Theme.animeBottom ? Theme.bg : "transparent" }
-                        GradientStop { position: Theme.animeBottom ? 0.40 : 0.60; color: "transparent" }
-                        GradientStop { position: 1.0; color: Theme.animeBottom ? "transparent" : Theme.bg }
-                    }
-                }
-            }
-
-            // ----- GRID -----
-            GridView {
-                id: grid
-                opacity: (win.gridView && !parent.empty) ? 1 : 0
-                visible: opacity > 0.01
-                Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-                anchors.fill: parent
-                topMargin: Theme.sp5
-                bottomMargin: Theme.sp5
-                leftMargin: Theme.sp4
-                rightMargin: Theme.sp4
-                cellWidth: 178 + Theme.sp4
-                cellHeight: 286
-                // No `populate` transition: it re-runs (fading every tile from 0)
-                // when the filter proxy reports a reorder as a re-layout, which read
-                // as the whole grid flashing. The container's opacity Behavior already
-                // covers the initial fade-in. (List view has no populate, never flashed.)
-                add: Transition {
-                    NumberAnimation { properties: "opacity"; from: 0; to: 1; duration: 180; easing.type: Easing.OutCubic }
-                    NumberAnimation { properties: "scale"; from: 0.9; to: 1; duration: 180; easing.type: Easing.OutCubic }
-                }
-                remove: Transition {
-                    NumberAnimation { properties: "opacity"; to: 0; duration: 160; easing.type: Easing.OutCubic }
-                    NumberAnimation { properties: "scale"; to: 0.85; duration: 160; easing.type: Easing.OutCubic }
-                }
-                displaced: Transition {
-                    NumberAnimation { properties: "x,y"; duration: 280; easing.type: Easing.OutBack; easing.overshoot: 0.9 }
-                    NumberAnimation { properties: "scale"; to: 1; duration: 280; easing.type: Easing.OutCubic }
-                }
-                move: Transition {
-                    NumberAnimation { properties: "x,y"; duration: 300; easing.type: Easing.OutBack; easing.overshoot: 1.1 }
-                }
-                moveDisplaced: Transition {
-                    NumberAnimation { properties: "x,y"; duration: 280; easing.type: Easing.OutBack; easing.overshoot: 0.9 }
-                }
-                clip: true
-                model: win.model
-                interactive: true
-                z: 1
-                ScrollBar.vertical: ScrollBar { id: gridVBar; policy: ScrollBar.AsNeeded; implicitWidth: 12 }
-
-                delegate: Item {
-                    id: tile
-                    width: 178
-                    height: 286
-
-                    required property int index
-                    required property string torrentName
-                    required property string metaTitle
-                    required property string stateKey
-                    required property real progress
-                    required property string posterPath
-                    required property string stateString
-                    required property string category
-                    required property string size
-
-                    readonly property string posterUrl: win.fileUrl(posterPath)
-
-                    // .poster wrapper (aspect 3:4 ≈ 178:237)
-                    Item {
-                        id: posterWrap
-                        width: 178
-                        height: 237
-
-                        // fallback (no poster): tinted bg + watermark + category + title
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: 10
-                            color: "#161618"
-                            visible: tile.posterUrl === ""
-                            // watermark: BATorrent logo (not the title's first letter)
-                            Image {
-                                anchors.centerIn: parent
-                                width: parent.width * 0.5
-                                height: width
-                                source: "qrc:/images/logo.svg"
-                                sourceSize: Qt.size(width * 2, width * 2)
-                                fillMode: Image.PreserveAspectFit
-                                opacity: 0.06
-                                layer.enabled: Theme.isLight
-                                layer.effect: MultiEffect { colorization: 1.0; colorizationColor: Theme.t1 }
-                            }
-                            Text {
-                                anchors.left: parent.left; anchors.top: parent.top
-                                anchors.leftMargin: 13; anchors.topMargin: 12
-                                text: tile.category
-                                color: Qt.rgba(1, 1, 1, 0.42)
-                                font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.3
-                                font.capitalization: Font.AllUppercase
-                                font.family: Theme.fontSans
-                            }
-                            Text {
-                                anchors.left: parent.left; anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.leftMargin: 13; anchors.rightMargin: 13; anchors.bottomMargin: 15
-                                text: tile.metaTitle || tile.torrentName
-                                color: "#f5f5f6"
-                                font.pixelSize: 18; font.weight: Font.Bold; font.letterSpacing: -0.3
-                                font.family: Theme.fontSans
-                                wrapMode: Text.WordWrap
-                                maximumLineCount: 3
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        // poster image (masked rounded) — only when present
-                        Rectangle {
-                            id: posterBg
-                            anchors.fill: parent
-                            color: "#161618"
-                            visible: false
-                            layer.enabled: true
-                            Image {
-                                anchors.fill: parent
-                                source: tile.posterUrl
-                                fillMode: Image.PreserveAspectCrop
-                                asynchronous: true
-                                // decode at ~2× display size, not the poster's full
-                                // resolution — cuts memory and decode time per cover.
-                                sourceSize: Qt.size(356, 474)
-                                cache: true
-                            }
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                height: parent.height * 0.6
-                                gradient: Gradient {
-                                    GradientStop { position: 0.0; color: "transparent" }
-                                    GradientStop { position: 0.55; color: Qt.rgba(0, 0, 0, 0.45) }
-                                    GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.92) }
-                                }
-                            }
-                        }
-                        Rectangle {
-                            id: posterMask
-                            anchors.fill: parent
-                            radius: 10
-                            color: "white"
-                            visible: false
-                            layer.enabled: true
-                        }
-                        MultiEffect {
-                            source: posterBg
-                            anchors.fill: parent
-                            maskEnabled: true
-                            maskSource: posterMask
-                            visible: tile.posterUrl !== ""
-                        }
-                        // title over the fade (only when poster present)
-                        Text {
-                            visible: tile.posterUrl !== ""
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            anchors.bottomMargin: 12
-                            text: tile.metaTitle || tile.torrentName
-                            color: "#f5f5f6"
-                            font.pixelSize: 15
-                            font.weight: Font.Bold
-                            font.letterSpacing: -0.2
-                            font.family: Theme.fontSans
-                            elide: Text.ElideRight
-                            maximumLineCount: 2
-                            wrapMode: Text.WordWrap
-                        }
-                        // .pbar progress (bottom, over everything)
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            height: 3
-                            color: Qt.rgba(0, 0, 0, 0.5)
-                            Rectangle {
-                                height: parent.height
-                                width: parent.width * tile.progress
-                                color: win.fillFor(tile.stateKey)
-                                Behavior on width { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                        // border overlay (radius 10, hair / accent when sel)
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: 10
-                            color: "transparent"
-                            border.color: win.isRowSelected(tile.index) ? Theme.accent : (tileMa.containsMouse ? Qt.rgba(1,1,1,0.2) : Theme.hair)
-                            border.width: win.isRowSelected(tile.index) ? 2 : 1
-                            Behavior on border.color { ColorAnimation { duration: 120; easing.type: Easing.OutCubic } }
-                        }
-                        MouseArea {
-                            id: tileMa
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: function(mouse) {
-                                if (mouse.button === Qt.RightButton) {
-                                    if (!win.isRowSelected(tile.index)) win.selectRow(tile.index, 0)
-                                    win.openContext(tile.index)
-                                } else {
-                                    win.selectRow(tile.index, mouse.modifiers)
-                                }
-                            }
-                            onDoubleClicked: function(mouse) {
-                                if (mouse.button !== Qt.RightButton) {
-                                    win.selectRow(tile.index, 0); session.openSelectedFile()
-                                }
-                            }
-                        }
-                    }
-
-                    // .tmeta (padding-top 12: .st dot+label · .sz)
-                    RowLayout {
-                        anchors.top: posterWrap.bottom
-                        anchors.topMargin: 12
-                        anchors.left: posterWrap.left
-                        anchors.right: posterWrap.right
-                        spacing: 0
-
-                        Row {
-                            spacing: 6
-                            Rectangle {
-                                width: 6
-                                height: 6
-                                radius: 3
-                                anchors.verticalCenter: parent.verticalCenter
-                                color: win.dotFor(tile.stateKey)
-                            }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: tile.stateString
-                                color: win.textFor(tile.stateKey)
-                                font.pixelSize: 12
-                                font.family: Theme.fontSans
-                            }
-                        }
-                        Item { Layout.fillWidth: true }
-                        Text {
-                            text: tile.size
-                            color: Theme.t4
-                            font.pixelSize: 12
-                            font.family: Theme.fontMono
-                        }
-                    }
-                }
-            }
-
-            // Empty-grid click → clear selection. Sits OVER the grid (z:2) and
-            // propagates clicks that land on a tile so tileMa still handles them;
-            // only clicks on blank space (grid.indexAt == -1) deselect. A plain
-            // MouseArea inside the Flickable never received these.
-            MouseArea {
-                anchors.fill: grid
-                // keep the scrollbar's lane uncovered (only while the grid overflows)
-                anchors.rightMargin: grid.contentHeight > grid.height ? gridVBar.implicitWidth : 0
-                visible: win.gridView && !parent.empty
-                enabled: visible
-                z: 2
-                acceptedButtons: Qt.LeftButton
-                propagateComposedEvents: true
-                onClicked: function(mouse) {
-                    var idx = grid.indexAt(mouse.x + grid.contentX, mouse.y + grid.contentY)
-                    if (idx < 0) {
-                        if (win.selectedRows.length > 0) {
-                            win.selectedRows = []; win.selected = -1; win._commitSel()
-                        }
-                    } else {
-                        mouse.accepted = false   // let the tile's MouseArea handle it
-                    }
-                }
-                onPressed: function(mouse) {
-                    // don't swallow the press over a tile, or scrolling/clicks break
-                    if (grid.indexAt(mouse.x + grid.contentX, mouse.y + grid.contentY) >= 0)
-                        mouse.accepted = false
-                }
-            }
-
-            // ----- LIST/COMPACT pinned column header (does not scroll) -----
-            Rectangle {
-                id: listHeader
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                height: 36
-                z: 2
-                visible: !win.gridView && !parent.empty
-                color: "transparent"
-                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: Theme.sp4
-                    anchors.rightMargin: Theme.sp4
-                    spacing: Theme.sp4
-
-                    HCol { label: (i18n.language, i18n.t("col_name")); col: "name"; fill: true }
-                    HCol { label: (i18n.language, i18n.t("col_size")); col: "size"; w: 78; alignRight: true }
-                    HCol { label: (i18n.language, i18n.t("col_progress")); col: "progress"; w: 104 }
-                    HCol { label: (i18n.language, i18n.t("col_down")); col: "down"; w: 78; alignRight: true }
-                    HCol { label: (i18n.language, i18n.t("col_up")); col: "up"; w: 78; alignRight: true }
-                    HCol { label: (i18n.language, i18n.t("col_state")); col: "state"; w: 110 }
-                    HCol { label: (i18n.language, i18n.t("col_category")); col: "category"; w: 90 }
-                    HCol { label: (i18n.language, i18n.t("col_peers")); col: "peers"; w: 56; alignRight: true }
-                    HCol { label: (i18n.language, i18n.t("col_added")); col: "added"; w: 104 }
-                }
-            }
-
-            // ----- LIST -----
-            ListView {
-                id: list
-                opacity: (!win.gridView && !parent.empty) ? 1 : 0
-                visible: opacity > 0.01
-                Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                // sits below the pinned column header in list/compact; fills in grid (hidden there)
-                anchors.top: win.gridView ? parent.top : listHeader.bottom
-                clip: true
-                model: win.model
-                interactive: true
-                z: 1
-                ScrollBar.vertical: ScrollBar { id: listVBar; policy: ScrollBar.AsNeeded; implicitWidth: 12 }
-                add: Transition { NumberAnimation { properties: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic } }
-                remove: Transition { NumberAnimation { properties: "opacity"; to: 0; duration: 120; easing.type: Easing.OutCubic } }
-                displaced: Transition { NumberAnimation { properties: "x,y"; duration: 180; easing.type: Easing.OutCubic } }
-
-                delegate: Rectangle {
-                    id: lrow
-                    width: ListView.view.width
-                    height: win.listRowH
-
-                    required property int index
-                    required property string torrentName
-                    required property string metaTitle
-                    required property string stateKey
-                    required property real progress
-                    required property string stateString
-                    required property string stateDetail
-                    required property string size
-                    required property string downSpeed
-                    required property string upSpeed
-                    required property int downRate
-                    required property int upRate
-                    required property string category
-                    required property int numPeers
-                    required property string posterPath
-                    required property var addedAt
-
-                    readonly property string posterUrl: win.fileUrl(posterPath)
-                    // the "stalled why" tooltip is driven by listArea (its z:2
-                    // hover-exclusive MouseArea starves any in-delegate handler)
-                    readonly property Item stateCell: lrowStateText
-
-                    color: win.isRowSelected(index) ? Theme.sel : (listArea.hoveredRow === index ? Theme.hover : "transparent")
-
-                    // .sel inset 2px barra esquerda
-                    Rectangle {
-                        visible: win.isRowSelected(lrow.index)
-                        anchors.left: parent.left
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        width: 2
-                        color: Theme.accent
-                    }
-                    // border-bottom hairSoft
-                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hairSoft }
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.sp4
-                        anchors.rightMargin: Theme.sp4
-                        spacing: Theme.sp4
-
-                        // .name: poster thumb + nome
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.sp3
-                            PosterThumb {
-                                Layout.alignment: Qt.AlignVCenter
-                                visible: !win.compactView   // compact view drops the cover art
-                                posterUrl: lrow.posterUrl
-                                label: lrow.metaTitle || lrow.torrentName || ""
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                Layout.alignment: Qt.AlignVCenter
-                                text: lrow.metaTitle || lrow.torrentName
-                                color: Theme.t1
-                                font.pixelSize: 13
-                                font.family: Theme.fontSans
-                                elide: Text.ElideRight
-                            }
-                        }
-                        Text {
-                            text: lrow.size
-                            Layout.preferredWidth: 78
-                            horizontalAlignment: Text.AlignRight
-                            color: Theme.t2
-                            font.pixelSize: 12
-                            font.family: Theme.fontMono
-                        }
-                        // progress: surfaceAlt track, state-colored fill, centered % (white over fill, t1 over track)
-                        Item {
-                            Layout.preferredWidth: 104
-                            Layout.preferredHeight: 18
-                            Rectangle {
-                                id: pbarTrack
-                                anchors.fill: parent
-                                radius: 4
-                                color: Theme.field
-                                clip: true
-                                Rectangle {
-                                    anchors.top: parent.top
-                                    anchors.bottom: parent.bottom
-                                    anchors.left: parent.left
-                                    width: Math.max(lrow.progress > 0.001 ? 2 : 0, parent.width * lrow.progress)
-                                    radius: 4
-                                    color: win.fillFor(lrow.stateKey)
-                                }
-                                Text {
-                                    id: pbarPct
-                                    anchors.centerIn: parent
-                                    text: (lrow.progress * 100).toFixed(1) + "%"
-                                    color: (parent.width / 2) < (parent.width * lrow.progress - 4) ? "#ffffff" : Theme.t1
-                                    font.pixelSize: 9
-                                    font.weight: Font.DemiBold
-                                    font.family: Theme.fontSans
-                                }
-                            }
-                        }
-                        Text {
-                            text: lrow.downRate > 0 ? lrow.downSpeed : "—"
-                            Layout.preferredWidth: 78
-                            horizontalAlignment: Text.AlignRight
-                            color: lrow.downRate > 0 ? Theme.accentText : Theme.t4
-                            font.pixelSize: 12
-                            font.family: Theme.fontMono
-                        }
-                        Text {
-                            text: lrow.upRate > 0 ? lrow.upSpeed : "—"
-                            Layout.preferredWidth: 78
-                            horizontalAlignment: Text.AlignRight
-                            color: lrow.upRate > 0 ? Theme.up : Theme.t4
-                            font.pixelSize: 12
-                            font.family: Theme.fontMono
-                        }
-                        Text {
-                            id: lrowStateText
-                            text: lrow.stateString
-                            Layout.preferredWidth: 110
-                            color: win.textFor(lrow.stateKey)
-                            font.pixelSize: 12
-                            font.weight: Theme.hasAnime ? Font.DemiBold : Font.Medium
-                            font.family: Theme.fontSans
-                        }
-                        Text {
-                            text: win.catLabel(lrow.category)
-                            Layout.preferredWidth: 90
-                            color: Theme.hasAnime ? Theme.t1 : Theme.t3
-                            style: Theme.hasAnime ? Text.Outline : Text.Normal
-                            styleColor: Theme.isLight ? "#ffffff" : "#000000"
-                            font.pixelSize: 12
-                            font.weight: Theme.hasAnime ? Font.Medium : Font.Normal
-                            font.family: Theme.fontSans
-                            elide: Text.ElideRight
-                        }
-                        Text {
-                            text: lrow.numPeers
-                            Layout.preferredWidth: 56
-                            horizontalAlignment: Text.AlignRight
-                            color: lrow.numPeers === 0 ? (Theme.hasAnime ? Theme.t2 : Theme.t4) : (Theme.hasAnime ? Theme.t1 : Theme.t2)
-                            style: Theme.hasAnime ? Text.Outline : Text.Normal
-                            styleColor: Theme.isLight ? "#ffffff" : "#000000"
-                            font.pixelSize: 12
-                            font.weight: Theme.hasAnime ? Font.Medium : Font.Normal
-                            font.family: Theme.fontMono
-                        }
-                        Text {
-                            text: Number(lrow.addedAt) > 0 ? new Date(Number(lrow.addedAt)).toLocaleDateString(Qt.locale(), Locale.ShortFormat) : "—"
-                            Layout.preferredWidth: 104
-                            color: Theme.hasAnime ? Theme.t1 : Theme.t3
-                            style: Theme.hasAnime ? Text.Outline : Text.Normal
-                            styleColor: Theme.isLight ? "#ffffff" : "#000000"
-                            font.pixelSize: 12
-                            font.weight: Theme.hasAnime ? Font.Medium : Font.Normal
-                            font.family: Theme.fontSans
-                            elide: Text.ElideRight
-                        }
-                    }
-                }
-            }
-
-            // ----- marquee + click/hover overlay for the list -----
-            MouseArea {
-                id: listArea
-                anchors.fill: list
-                // leave the scrollbar's lane uncovered (only when the list overflows)
-                // so the bar stays draggable instead of being eaten by this overlay
-                anchors.rightMargin: list.contentHeight > list.height ? listVBar.implicitWidth : 0
-                visible: !win.gridView && !parent.empty
-                enabled: visible
-                hoverEnabled: true
-                preventStealing: true   // don't let the ListView steal the gesture
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                z: 2
-
-                property int hoveredRow: -1
-                readonly property int rowH: win.listRowH
-                property bool dragging: false
-                property real startX: 0
-                property real startY: 0
-                property int pressRow: -1
-
-                // "stalled why" tooltip over the State cell — owned here because
-                // this hover-exclusive MouseArea starves in-delegate handlers
-                property string tipText: ""
-                property point tipPos: Qt.point(0, 0)
-                Timer {
-                    id: stateTipDelay
-                    interval: 350
-                    onTriggered: if (listArea.tipText.length > 0) stateTip.visible = true
-                }
-                function updateStateTip(mx, my) {
-                    var row = rowAt(my, mx)
-                    var d = row >= 0 ? list.itemAtIndex(row) : null
-                    if (d && d.stateDetail !== undefined && d.stateDetail.length > 0 && !dragging) {
-                        var p = d.stateCell.mapToItem(listArea, 0, 0)
-                        if (mx >= p.x - 6 && mx <= p.x + d.stateCell.width + 6) {
-                            tipText = d.stateDetail
-                            tipPos = Qt.point(p.x, p.y + 26)
-                            if (!stateTip.visible) stateTipDelay.restart()
-                            return
-                        }
-                    }
-                    tipText = ""
-                    stateTipDelay.stop()
-                    stateTip.visible = false
-                }
-                Rectangle {
-                    id: stateTip
-                    visible: false
-                    x: Math.max(8, Math.min(listArea.tipPos.x, listArea.width - width - 8))
-                    y: listArea.tipPos.y
-                    z: 10
-                    radius: 7
-                    color: Theme.panel
-                    border.color: Theme.hair
-                    border.width: 1
-                    width: stateTipText.implicitWidth + 20
-                    height: stateTipText.implicitHeight + 12
-                    Text {
-                        id: stateTipText
-                        anchors.centerIn: parent
-                        text: listArea.tipText
-                        color: Theme.t1
-                        font.pixelSize: 11
-                        font.family: Theme.fontSans
-                    }
-                }
-
-                function rowAt(my, mx) {
-                    if (!win.model || list.count === 0) return -1
-                    // use the ListView's own layout so detection lines up exactly
-                    // with where each delegate is drawn (header returns -1).
-                    return list.indexAt((mx === undefined ? width / 2 : mx) + list.contentX,
-                                        my + list.contentY)
-                }
-
-                onPositionChanged: function(mouse) {
-                    hoveredRow = rowAt(mouse.y, mouse.x)
-                    updateStateTip(mouse.x, mouse.y)
-                    if (pressed && !dragging &&
-                        (Math.abs(mouse.x - startX) > 8 || Math.abs(mouse.y - startY) > 8))
-                        dragging = true
-                    if (dragging) {
-                        marquee.x = Math.min(startX, mouse.x)
-                        marquee.y = Math.min(startY, mouse.y)
-                        marquee.width = Math.abs(mouse.x - startX)
-                        marquee.height = Math.abs(mouse.y - startY)
-                    }
-                }
-                onExited: { hoveredRow = -1; tipText = ""; stateTipDelay.stop(); stateTip.visible = false }
-                onPressed: function(mouse) {
-                    startX = mouse.x; startY = mouse.y
-                    pressRow = rowAt(mouse.y, mouse.x)
-                    dragging = false
-                }
-                onReleased: function(mouse) {
-                    // a real marquee = dragged past threshold AND box big enough
-                    if (dragging && (marquee.width > 6 || marquee.height > 6)) {
-                        var top = marquee.y, bot = marquee.y + marquee.height
-                        var rows = []
-                        for (var i = 0; i < list.count; ++i) {
-                            var ry = i * rowH - list.contentY
-                            if (ry + rowH > top && ry < bot) rows.push(i)
-                        }
-                        win.selectedRows = rows
-                        win.selected = rows.length > 0 ? rows[rows.length - 1] : -1
-                        win.anchorRow = rows.length > 0 ? rows[0] : -1
-                        win._commitSel()
-                        dragging = false
-                        return
-                    }
-                    dragging = false
-                    // otherwise treat as a click (use release position, robust to jitter)
-                    var clickRow = rowAt(mouse.y, mouse.x)
-                    if (clickRow < 0) {
-                        if (mouse.button === Qt.LeftButton) {
-                            win.selectedRows = []; win.selected = -1; win._commitSel()
-                        }
-                        return
-                    }
-                    if (mouse.button === Qt.RightButton) {
-                        if (!win.isRowSelected(clickRow)) win.selectRow(clickRow, 0)
-                        win.openContext(clickRow)
-                    } else {
-                        win.selectRow(clickRow, mouse.modifiers)
-                    }
-                }
-                onDoubleClicked: function(mouse) {
-                    var r = rowAt(mouse.y, mouse.x)
-                    // select the clicked row first so we reveal *that* torrent,
-                    // not whatever was selected before, then open its folder
-                    // with the file highlighted.
-                    if (r >= 0) { win.selectRow(r, 0); session.openSelectedFile() }
-                }
-
-                Rectangle {
-                    id: marquee
-                    visible: listArea.dragging
-                    color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12)
-                    border.color: Theme.accent
-                    border.width: 1
-                    radius: 2
-                }
+            DetailSidebar {
+                win: win
+                // side inspector only in grid mode when the user hasn't chosen
+                // the bottom deck
+                showInspector: win.gridView && !win.detailBottom
+                onRenameFileRequested: function(idx, current) { win.promptRenameFile(idx, current) }
             }
         }
 
-        // ================== GRAPH ==================
-        Rectangle {
-            id: graphPanel
-            Layout.fillWidth: true
-            Layout.preferredHeight: 64
-            color: Theme.bg
-            Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.hair }
-
-            readonly property var dl: typeof session !== "undefined" ? session.downloadHistory : []
-            readonly property var ul: typeof session !== "undefined" ? session.uploadHistory : []
-            // auto-scale to the real peak of the visible window (like speedgraph.cpp:
-            // no fixed floor → the curve always uses ~87% of the height, whether
-            // traffic is a few B/s or several MB/s). A floor squished low traffic
-            // into a flat band at the bottom.
-            readonly property int scaledMax: {
-                var m = 1
-                for (var i = 0; i < dl.length; ++i) if (dl[i] > m) m = dl[i]
-                for (var j = 0; j < ul.length; ++j) if (ul[j] > m) m = ul[j]
-                return Math.round(m * 1.15)
-            }
-            readonly property int slots: 60
-
-            function scaleText(b) {
-                if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + " MB/s"
-                return Math.round(b / 1024) + " KB/s"
-            }
-            // build a smooth filled area path from a byte-history array
-            function areaPath(arr, h) {
-                if (!arr || arr.length === 0) return ""
-                var n = arr.length
-                var step = graphShape.width / (slots - 1)
-                var off = (slots - n) * step
-                function yAt(v) { return h - (v / scaledMax) * (h - 2) }
-                var x0 = off
-                var s = "M " + x0.toFixed(1) + "," + h.toFixed(1)
-                s += " L " + x0.toFixed(1) + "," + yAt(arr[0]).toFixed(1)
-                for (var i = 1; i < n; ++i) {
-                    var px = off + (i - 1) * step, py = yAt(arr[i - 1])
-                    var x = off + i * step, y = yAt(arr[i])
-                    var cx = (px + x) / 2
-                    s += " C " + cx.toFixed(1) + "," + py.toFixed(1) + " " + cx.toFixed(1) + "," + y.toFixed(1) + " " + x.toFixed(1) + "," + y.toFixed(1)
-                }
-                s += " L " + (off + (n - 1) * step).toFixed(1) + "," + h.toFixed(1) + " Z"
-                return s
-            }
-            // open smooth curve (top line only — no bottom edge / no fill close)
-            function linePath(arr, h) {
-                if (!arr || arr.length === 0) return ""
-                var n = arr.length
-                var step = graphShape.width / (slots - 1)
-                var off = (slots - n) * step
-                function yAt(v) { return h - (v / scaledMax) * (h - 2) }
-                var s = "M " + off.toFixed(1) + "," + yAt(arr[0]).toFixed(1)
-                for (var i = 1; i < n; ++i) {
-                    var px = off + (i - 1) * step, py = yAt(arr[i - 1])
-                    var x = off + i * step, y = yAt(arr[i])
-                    var cx = (px + x) / 2
-                    s += " C " + cx.toFixed(1) + "," + py.toFixed(1) + " " + cx.toFixed(1) + "," + y.toFixed(1) + " " + x.toFixed(1) + "," + y.toFixed(1)
-                }
-                return s
-            }
-
-            Text {
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.topMargin: 6
-                anchors.leftMargin: Theme.sp4
-                text: graphPanel.scaleText(graphPanel.scaledMax)
-                color: Theme.t4
-                font.pixelSize: 10
-                font.family: Theme.fontSans
-            }
-            Row {
-                anchors.top: parent.top
-                anchors.right: parent.right
-                anchors.topMargin: 6
-                anchors.rightMargin: Theme.sp4
-                spacing: Theme.sp4
-                Row {
-                    spacing: 6
-                    Rectangle { implicitWidth: 6; implicitHeight: 6; radius: 3; color: Theme.accent; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: typeof session !== "undefined" ? session.totalDownSpeed : "0 KB/s"; color: Theme.t3; font.pixelSize: 11; font.family: Theme.fontMono; anchors.verticalCenter: parent.verticalCenter }
-                }
-                Row {
-                    spacing: 6
-                    Rectangle { implicitWidth: 6; implicitHeight: 6; radius: 3; color: Theme.amber; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: typeof session !== "undefined" ? session.totalUpSpeed : "0 KB/s"; color: Theme.t3; font.pixelSize: 11; font.family: Theme.fontMono; anchors.verticalCenter: parent.verticalCenter }
-                }
-            }
-
-            // real curves from session history (download accent + upload amber)
-            Shape {
-                id: graphShape
-                anchors.fill: parent
-                anchors.topMargin: 24
-                anchors.bottomMargin: 4
-                preferredRendererType: Shape.CurveRenderer   // smooth lines on Windows (no MSAA)
-                antialiasing: true
-
-                // order matches speedgraph.cpp: upload under, download on top.
-                // fills carry no stroke (the bottom edge was the phantom floor line).
-                ShapePath {
-                    strokeColor: "transparent"
-                    strokeWidth: 0
-                    fillGradient: LinearGradient {
-                        x1: 0; y1: 0; x2: 0; y2: graphShape.height
-                        GradientStop { position: 0.0; color: Qt.rgba(Theme.amber.r, Theme.amber.g, Theme.amber.b, 0.09) }
-                        GradientStop { position: 1.0; color: Qt.rgba(Theme.amber.r, Theme.amber.g, Theme.amber.b, 0.0) }
-                    }
-                    PathSvg { path: graphPanel.areaPath(graphPanel.ul, graphShape.height) }
-                }
-                ShapePath {
-                    strokeColor: "transparent"
-                    strokeWidth: 0
-                    fillGradient: LinearGradient {
-                        x1: 0; y1: 0; x2: 0; y2: graphShape.height
-                        GradientStop { position: 0.0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.09) }
-                        GradientStop { position: 1.0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.0) }
-                    }
-                    PathSvg { path: graphPanel.areaPath(graphPanel.dl, graphShape.height) }
-                }
-                ShapePath {
-                    strokeColor: Qt.rgba(Theme.amber.r, Theme.amber.g, Theme.amber.b, 0.5)
-                    strokeWidth: 1.25
-                    fillColor: "transparent"
-                    capStyle: ShapePath.RoundCap
-                    joinStyle: ShapePath.RoundJoin
-                    PathSvg { path: graphPanel.linePath(graphPanel.ul, graphShape.height) }
-                }
-                ShapePath {
-                    strokeColor: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.5)
-                    strokeWidth: 1.25
-                    fillColor: "transparent"
-                    capStyle: ShapePath.RoundCap
-                    joinStyle: ShapePath.RoundJoin
-                    PathSvg { path: graphPanel.linePath(graphPanel.dl, graphShape.height) }
-                }
-            }
+        // ================== DETAIL (bottom deck: list mode always; grid mode
+        // when the user prefers the panel at the bottom) ==================
+        DetailPanel {
+            win: win
+            visible: !win.gridView || win.detailBottom
+            onRenameFileRequested: function(idx, current) { win.promptRenameFile(idx, current) }
         }
-
-        // ================== DETAIL ==================
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 270
-            color: Theme.panel
-            Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.hair }
-
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: 0
-
-                // .dtabs (42px, 5 tabs)
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 42
-                    color: "transparent"
-                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
-
-                    Row {
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.sp5
-                        spacing: Theme.sp5
-
-                        Repeater {
-                            model: [
-                                { label: (i18n.language, i18n.t("detail_general")),    ct: "" },
-                                { label: (i18n.language, i18n.t("detail_peers")),    ct: win.hasSel ? String(session.selectedPeers) : "" },
-                                { label: (i18n.language, i18n.t("detail_files")), ct: win.hasSel ? String(session.selectedFiles.length) : "" },
-                                { label: (i18n.language, i18n.t("detail_trackers")), ct: win.hasSel ? String(session.selectedTrackers.length) : "" },
-                                { label: (i18n.language, i18n.t("detail_pieces")),  ct: "" }
-                            ]
-                            delegate: Item {
-                                height: 42
-                                width: dtabRow.implicitWidth
-                                readonly property bool on: win.detailTab === index
-
-                                Row {
-                                    id: dtabRow
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: 7
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: modelData.label
-                                        color: parent.parent.on ? Theme.t1 : (dtabMa.containsMouse ? Theme.t2 : Theme.t3)
-                                        font.pixelSize: 13
-                                        font.weight: parent.parent.on ? Font.DemiBold : Font.Medium
-                                        font.family: Theme.fontSans
-                                    }
-                                    Text {
-                                        visible: modelData.ct !== ""
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: modelData.ct
-                                        color: Theme.t4
-                                        font.pixelSize: 11
-                                        font.family: Theme.fontMono
-                                    }
-                                }
-                                Rectangle {
-                                    visible: parent.on
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    height: 2
-                                    color: Theme.accent
-                                }
-                                MouseArea {
-                                    id: dtabMa
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: win.detailTab = index
-                                }
-                            }
-                        }
-                    }
+        // ================== STATUS BAR ==================
+        StatusBar {}
                 }
-
-                // .dbody — stacked panes (Geral / Peers / Arquivos / Trackers / Pedaços)
-                StackLayout {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    currentIndex: win.detailTab
-
-                  // --- 0: Geral ---
-                  Item {
-                  RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: Theme.sp5
-                    spacing: Theme.sp6
-
-                    // .dcover (radius 8 — mask via MultiEffect)
-                    Item {
-                        Layout.preferredWidth: 104
-                        Layout.preferredHeight: 146
-                        Layout.alignment: Qt.AlignTop
-
-                        Rectangle {
-                            id: dcoverContent
-                            anchors.fill: parent
-                            color: "#161618"
-                            visible: false
-                            layer.enabled: true
-                            Image {
-                                anchors.fill: parent
-                                source: win.fileUrl(win.hasSel ? session.selectedPoster : "")
-                                fillMode: Image.PreserveAspectCrop
-                                asynchronous: true
-                                cache: true
-                                sourceSize: Qt.size(208, 292)
-                            }
-                        }
-                        Rectangle {
-                            id: dcoverMask
-                            anchors.fill: parent
-                            radius: 8
-                            color: "white"
-                            visible: false
-                            layer.enabled: true
-                        }
-                        MultiEffect {
-                            source: dcoverContent
-                            anchors.fill: parent
-                            maskEnabled: true
-                            maskSource: dcoverMask
-                            visible: win.hasSel && session.selectedPoster.length > 0
-                        }
-                        // placeholder logo (no poster / no selection)
-                        Image {
-                            anchors.centerIn: parent
-                            visible: !(win.hasSel && session.selectedPoster.length > 0)
-                            width: 52; height: 52
-                            source: "qrc:/images/logo.svg"
-                            sourceSize: Qt.size(104, 104)
-                            fillMode: Image.PreserveAspectFit
-                            opacity: 0.4
-                            layer.enabled: Theme.isLight
-                            layer.effect: MultiEffect { colorization: 1.0; colorizationColor: Theme.t1 }
-                        }
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: 8
-                            color: "transparent"
-                            border.color: Theme.hair
-                            border.width: 1
-                        }
-                    }
-
-                    // .dmain max-width 460
-                    ColumnLayout {
-                        Layout.preferredWidth: 460
-                        Layout.maximumWidth: 460
-                        Layout.alignment: Qt.AlignTop
-                        spacing: 6
-
-                        Text {
-                            text: win.hasSel ? (session.selectedMetaTitle.length > 0 ? session.selectedMetaTitle : session.selectedName) : (i18n.language, i18n.t("empty_no_selection"))
-                            color: Theme.t1
-                            font.pixelSize: 17
-                            font.weight: Font.DemiBold
-                            font.letterSpacing: -0.2
-                            font.family: Theme.fontSans
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            visible: win.hasSel && session.selectedMetaInfo.length > 0
-                            text: win.hasSel ? session.selectedMetaInfo : ""
-                            color: Theme.t3
-                            font.pixelSize: 12
-                            font.family: Theme.fontSans
-                        }
-                        Text {
-                            visible: win.hasSel && session.selectedDescription.length > 0
-                            Layout.topMargin: 6
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            maximumLineCount: 4
-                            elide: Text.ElideRight
-                            color: Theme.t2
-                            font.pixelSize: 12
-                            font.family: Theme.fontSans
-                            lineHeight: 1.55
-                            text: win.hasSel ? session.selectedDescription : ""
-                        }
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    // .dcols (3 colunas KV)
-                    RowLayout {
-                        Layout.alignment: Qt.AlignTop
-                        spacing: Theme.sp6
-
-                        // INFO
-                        ColumnLayout {
-                            Layout.preferredWidth: 168
-                            Layout.alignment: Qt.AlignTop
-                            spacing: 0
-
-                            Text {
-                                text: (i18n.language, i18n.t("detail_section_info"))
-                                color: Theme.t4
-                                font.pixelSize: 10
-                                font.weight: Font.Bold
-                                font.letterSpacing: 0.8
-                                font.family: Theme.fontSans
-                                Layout.bottomMargin: Theme.sp3
-                            }
-                            Repeater {
-                                model: [
-                                    { kk: "detail_kv_name",  v: win.hasSel ? session.selectedName : "—" },
-                                    { kk: "detail_kv_size",  v: win.hasSel ? session.selectedSize : "—" },
-                                    { kk: "detail_kv_hash",  v: win.hasSel ? session.selectedHash : "—" },
-                                    { kk: "detail_kv_state", v: win.hasSel ? session.selectedState : "—" }
-                                ]
-                                delegate: RowLayout {
-                                    Layout.fillWidth: true
-                                    Text { text: (i18n.language, i18n.t(modelData.kk)); color: Theme.t3; font.pixelSize: 12; font.family: Theme.fontSans }
-                                    Item { Layout.fillWidth: true }
-                                    Text { text: modelData.v; color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans; elide: Text.ElideMiddle; Layout.maximumWidth: 110; horizontalAlignment: Text.AlignRight }
-                                }
-                            }
-                        }
-
-                        // TRANSFERÊNCIA
-                        ColumnLayout {
-                            Layout.preferredWidth: 168
-                            Layout.alignment: Qt.AlignTop
-                            spacing: 0
-
-                            Text {
-                                text: (i18n.language, i18n.t("detail_section_transfer"))
-                                color: Theme.t4
-                                font.pixelSize: 10
-                                font.weight: Font.Bold
-                                font.letterSpacing: 0.8
-                                font.family: Theme.fontSans
-                                Layout.bottomMargin: Theme.sp3
-                            }
-                            Repeater {
-                                model: [
-                                    { kk: "detail_kv_downloaded", v: win.hasSel ? session.selectedDownloaded : "—" },
-                                    { kk: "col_down",             v: win.hasSel ? session.selectedDownSpeed : "—" },
-                                    { kk: "col_up",               v: win.hasSel ? session.selectedUpSpeed : "—" },
-                                    { kk: "detail_kv_eta",        v: win.hasSel ? session.selectedEta : "—" }
-                                ]
-                                delegate: RowLayout {
-                                    Layout.fillWidth: true
-                                    Text { text: (i18n.language, i18n.t(modelData.kk)); color: Theme.t3; font.pixelSize: 12; font.family: Theme.fontSans }
-                                    Item { Layout.fillWidth: true }
-                                    Text { text: modelData.v; color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans }
-                                }
-                            }
-                        }
-
-                        // PEERS
-                        ColumnLayout {
-                            Layout.preferredWidth: 168
-                            Layout.alignment: Qt.AlignTop
-                            spacing: 0
-
-                            Text {
-                                text: (i18n.language, i18n.t("detail_section_peers"))
-                                color: Theme.t4
-                                font.pixelSize: 10
-                                font.weight: Font.Bold
-                                font.letterSpacing: 0.8
-                                font.family: Theme.fontSans
-                                Layout.bottomMargin: Theme.sp3
-                            }
-                            Repeater {
-                                model: [
-                                    { kk: "detail_kv_seeds", v: win.hasSel ? String(session.selectedSeeds) : "—" },
-                                    { kk: "detail_kv_peers", v: win.hasSel ? String(session.selectedPeers) : "—" },
-                                    { kk: "detail_kv_ratio", v: win.hasSel ? session.selectedRatio : "—" }
-                                ]
-                                delegate: RowLayout {
-                                    Layout.fillWidth: true
-                                    Text { text: (i18n.language, i18n.t(modelData.kk)); color: Theme.t3; font.pixelSize: 12; font.family: Theme.fontSans }
-                                    Item { Layout.fillWidth: true }
-                                    Text { text: modelData.v; color: Theme.t1; font.pixelSize: 12; font.family: Theme.fontSans }
-                                }
-                            }
-                        }
-                    }
-                  }
-                  }
-                  // --- 1: Peers · 2: Arquivos · 3: Trackers · 4: Pedaços ---
-                  // Only build the heavy list for the tab that's actually open.
-                  // StackLayout instantiates every child and keeps its bindings
-                  // live, so without the tab guard, clicking a torrent rebuilt
-                  // ALL of these at once — and selectedPieces alone is one entry
-                  // per piece (hundreds of thousands on a big torrent), which
-                  // froze the GUI thread on every single selection.
-                  DetailPeers    { peers:    (win.hasSel && win.detailTab === 1) ? session.selectedPeerList : []
-                                   loading:  win.peersTabOpen && session.peersLoading }
-                  DetailFiles {
-                      files: (win.hasSel && win.detailTab === 2) ? session.selectedFiles : []
-                      onRenameFile: function(idx, current) {
-                          inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), current, "",
-                              function(t){ if (t.length > 0) session.renameSelectedFile(idx, t) }, true)
-                      }
-                      onOpenFile: function(idx) { if (typeof session !== "undefined") session.openFileAt(idx) }
-                  }
-                  DetailTrackers { trackers: (win.hasSel && win.detailTab === 3) ? session.selectedTrackers : [] }
-                  DetailPieces   { pieces:   (win.hasSel && win.detailTab === 4) ? session.selectedPieces   : [] }
-                }
-            }
-        }
-
-        // ================== STATUSBAR ==================
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 30
-            color: Theme.elev
-            Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.hair }
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.sp4
-                anchors.rightMargin: Theme.sp4
-                spacing: Theme.sp2
-
-                Text {
-                    text: typeof session !== "undefined"
-                          ? (i18n.language, i18n.t("status_torrents_active")).arg(session.torrentCount).arg(session.activeCount)
-                          : "0 torrents"
-                    color: Theme.t4
-                    font.pixelSize: 12
-                    font.family: Theme.fontSans
-                }
-                // alt-speed (turtle): a mode toggle lives with the other status
-                // signals, not among the toolbar actions
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.leftMargin: Theme.sp2
-                    width: 26; height: 22; radius: 6
-                    readonly property bool on: typeof session !== "undefined" && session.altSpeedsActive
-                    color: on ? Theme.accentTint : (turtleMa.containsMouse ? Theme.hover : "transparent")
-                    IconImg {
-                        anchors.centerIn: parent
-                        src: "qrc:/icons/turtle.svg"
-                        tint: parent.on ? Theme.accentText : Theme.t4
-                        s: 15
-                    }
-                    MouseArea {
-                        id: turtleMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: if (typeof session !== "undefined") session.setAltSpeedsActive(!session.altSpeedsActive)
-                    }
-                    ToolTip.text: (i18n.language, i18n.t("tb_alt_speed"))
-                    ToolTip.visible: turtleMa.containsMouse
-                    ToolTip.delay: 400
-                }
-
-                // port reachability (UPnP/NAT-PMP + listen heuristic)
-                Row {
-                    id: portInd
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.leftMargin: Theme.sp2
-                    spacing: 6
-                    property int ps: typeof session !== "undefined" ? session.portStatus : 0
-                    Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 8; height: 8; radius: 4
-                        color: portInd.ps === 1 ? Theme.grn
-                             : portInd.ps === 2 ? Theme.amber
-                             : portInd.ps === 3 ? Theme.accent : Theme.t4
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: (i18n.language, i18n.t("tb_port") + ": " + (portInd.ps === 1 ? i18n.t("port_open")
-                             : portInd.ps === 2 ? i18n.t("port_firewalled")
-                             : portInd.ps === 3 ? i18n.t("port_closed") : i18n.t("port_checking")))
-                        color: Theme.t4
-                        font.pixelSize: 12
-                        font.family: Theme.fontSans
-                    }
-                }
-                Item { Layout.fillWidth: true }
-                Rectangle { Layout.alignment: Qt.AlignVCenter; implicitWidth: 6; implicitHeight: 6; radius: 3; color: Theme.accent }
-                Text { text: typeof session !== "undefined" ? session.totalDownSpeed : "0 KB/s"; color: Theme.t3; font.pixelSize: 12; font.family: Theme.fontMono }
-                Rectangle { Layout.alignment: Qt.AlignVCenter; implicitWidth: 6; implicitHeight: 6; radius: 3; color: Theme.amber }
-                Text { text: typeof session !== "undefined" ? session.totalUpSpeed : "0 KB/s"; color: Theme.t3; font.pixelSize: 12; font.family: Theme.fontMono }
-                Text {
-                    text: typeof session !== "undefined"
-                          ? "·  Total " + session.totalDownloaded + " ↓ · " + session.totalUploaded + " ↑ · Ratio " + session.globalRatio
-                          : ""
-                    color: Theme.t4
-                    font.pixelSize: 12
-                    font.family: Theme.fontSans
-                }
-                Text {
-                    visible: typeof session !== "undefined" && session.freeDiskSpace.length > 0
-                    text: typeof session !== "undefined"
-                          ? "·  " + (i18n.language, i18n.t("status_free_space")).arg(session.freeDiskSpace)
-                          : ""
-                    color: Theme.t4
-                    font.pixelSize: 12
-                    font.family: Theme.fontSans
-                }
-            }
-        }
-                }
-                // ----- page 1: Discover -----
-                DiscoverView {
+                // ----- page 1: Encontrar (Find) — browse + search -----
+                SearchView {
+                    id: searchPage
                     Layout.fillWidth: true; Layout.fillHeight: true
-                    onOpenSearch: function(q) {
-                        navRail.currentIndex = 2
-                        searchPage.runQuery(q)   // fills the bar + runs (no ghost search)
-                    }
+                    onFreeSpaceRequested: function (bytes) { makeRoomPanel.targetBytes = bytes; makeRoomPanel.open = true }
                 }
-                // ----- page 2: Search -----
-                SearchView { id: searchPage; Layout.fillWidth: true; Layout.fillHeight: true }
-                // ----- page 3: HUB -----
+                // ----- page 2: HUB -----
                 HubView {
                     id: hubPage; Layout.fillWidth: true; Layout.fillHeight: true
-                    onOpenSearch: function(q) { navRail.currentIndex = 2; searchPage.runQuery(q) }
+                    onOpenSearch: function(q) { win.currentPage = 1; searchPage.runQuery(q) }
+                }
+                // ----- page 3: Settings (fullscreen tab, was a top-level window) -----
+                SettingsView {
+                    id: settingsPage; Layout.fillWidth: true; Layout.fillHeight: true
+                    isCurrent: win.currentPage === 3
+                    onClosed: win.currentPage = 0
                 }
             }
         }
@@ -2599,28 +1190,41 @@ Window {
         id: dropZone
         anchors.fill: parent
         z: 150
+        function isMagnetLike(s) {
+            var u = s.toLowerCase()
+            return u.indexOf("magnet:") === 0 || u.indexOf("bittorrent:") === 0
+        }
         function accepts(drag) {
             if (drag.hasUrls) {
-                for (var i = 0; i < drag.urls.length; ++i)
-                    if (drag.urls[i].toString().toLowerCase().endsWith(".torrent")) return true
+                for (var i = 0; i < drag.urls.length; ++i) {
+                    var u = drag.urls[i].toString().toLowerCase()
+                    if (u.endsWith(".torrent") || dropZone.isMagnetLike(u)) return true
+                }
             }
-            if (drag.hasText && drag.text.indexOf("magnet:") === 0) return true
+            if (drag.hasText && dropZone.isMagnetLike(drag.text)) return true
             return false
         }
         onEntered: function(drag) { drag.accepted = accepts(drag) }
         onDropped: function(drop) {
             if (typeof session === "undefined") return
+            // Browsers hand a dragged magnet link over as a url, not just text —
+            // sort those out before treating the rest of drop.urls as .torrent files.
+            var torrentUrls = []
+            var addedMagnet = false
             if (drop.hasUrls) {
-                // Queue every dropped .torrent so each gets the preview/choose-folder
-                // dialog in turn, instead of only the first.
-                var urls = []
-                for (var i = 0; i < drop.urls.length; ++i)
-                    urls.push(drop.urls[i].toString())
-                win.enqueueTorrentUrls(urls)
-                drop.accept()
-            } else if (drop.hasText && drop.text.indexOf("magnet:") === 0) {
-                session.addMagnetUri(drop.text); drop.accept()
+                for (var i = 0; i < drop.urls.length; ++i) {
+                    var u = drop.urls[i].toString()
+                    if (dropZone.isMagnetLike(u)) { session.addMagnetUri(u); addedMagnet = true }
+                    else torrentUrls.push(u)
+                }
             }
+            // Queue every dropped .torrent so each gets the preview/choose-folder
+            // dialog in turn, instead of only the first.
+            if (torrentUrls.length > 0) win.enqueueTorrentUrls(torrentUrls)
+            // browsers hand the SAME magnet as url AND text — the text path is
+            // only a fallback, or a drop creates two identical torrents
+            if (!addedMagnet && drop.hasText && dropZone.isMagnetLike(drop.text)) session.addMagnetUri(drop.text)
+            drop.accept()
         }
     }
     Rectangle {
@@ -2693,8 +1297,14 @@ Window {
         var useDefault = settings.get("useDefaultPath") === true
         while (win.torrentQueue.length > 0) {
             var u = win.torrentQueue.shift()
-            if (useDefault) { session.addTorrentFile(u); continue }   // skip the dialog
             var p = session.previewTorrent(u)
+            // "skip the dialog" is a convenience for the common case — it stops
+            // being convenient the moment the download can't actually fit, so a
+            // known size that won't fit still surfaces the dialog (with its
+            // disk-fit warning) instead of silently failing mid-download.
+            var known = p && p.ok && (p.totalSizeBytes || 0) > 0
+            var fits = !known || session.freeSaveBytes() < 0 || p.totalSizeBytes <= session.freeSaveBytes()
+            if (useDefault && fits) { session.addTorrentFile(u); continue }
             if (p && p.ok) {
                 addTorrentDlg.savePath = session.defaultSavePath()
                 addTorrentDlg.loadPreview(p, u)
@@ -2711,11 +1321,29 @@ Window {
             queueTimer.restart()                // open the next once this one has closed
         }
         onRejected: queueTimer.restart()
+        onFreeSpaceRequested: function (bytes) { makeRoomPanel.targetBytes = bytes; makeRoomPanel.open = true }
     }
     RemoveDialog {
         id: removeDlg
         onAccepted: if (typeof session !== "undefined") {
-            if (deleteFiles) session.removeSelectedWithFiles(); else session.removeSelected()
+            if (deleteFiles) {
+                if (deletePermanently) session.removeSelectedWithFilesPermanent()
+                else session.removeSelectedWithFiles()
+            } else session.removeSelected()
+        }
+    }
+    MakeRoomPanel {
+        id: makeRoomPanel
+        onDeleteRequested: function (infoHash) {
+            if (typeof session === "undefined") return
+            if (session.selectByInfoHash(infoHash)) removeDlg.open()
+        }
+        // the row list is a snapshot (Q_INVOKABLE, not a bound property) — refresh
+        // it after a delete goes through so the panel doesn't show a stale entry
+        Connections {
+            target: typeof session !== "undefined" ? session : null
+            ignoreUnknownSignals: true
+            function onStatsChanged() { if (makeRoomPanel.open) makeRoomPanel.reload() }
         }
     }
     InputPromptDialog   { id: inputPrompt }
@@ -2736,19 +1364,31 @@ Window {
         }
     }
 
-    // auto-shutdown: cancelable countdown after all downloads finish
+    // post-download action: cancelable countdown after all downloads finish
     property int shutdownLeft: 0
+    property string shutdownActionLabel: ""
+    readonly property var postDownloadActionKeys: ["post_action_none", "post_action_close",
+        "post_action_lock", "post_action_sleep", "post_action_hibernate",
+        "post_action_signout", "post_action_shutdown", "post_action_restart"]
+    function postDownloadActionLabel(idx) {
+        var key = win.postDownloadActionKeys[idx] || "post_action_shutdown"
+        return i18n.t(key)
+    }
     Timer {
         id: shutdownTimer; interval: 1000; repeat: true
         onTriggered: {
             win.shutdownLeft--
-            if (win.shutdownLeft <= 0) { stop(); shutdownDlg.close(); if (typeof session !== "undefined") session.performShutdown() }
+            if (win.shutdownLeft <= 0) { stop(); shutdownDlg.close(); if (typeof session !== "undefined") session.performPostDownloadAction() }
         }
     }
     Connections {
         target: typeof session !== "undefined" ? session : null
         ignoreUnknownSignals: true
-        function onAllDownloadsComplete() { win.shutdownLeft = 60; shutdownTimer.restart(); shutdownDlg.open() }
+        function onAllDownloadsComplete() {
+            win.shutdownActionLabel = win.postDownloadActionLabel(
+                typeof settings !== "undefined" ? settings.get("postDownloadAction") : 6)
+            win.shutdownLeft = 60; shutdownTimer.restart(); shutdownDlg.open()
+        }
     }
     BatDialog {
         id: shutdownDlg
@@ -2759,7 +1399,7 @@ Window {
         onRejected: shutdownTimer.stop()
         Text {
             Layout.fillWidth: true
-            text: i18n.t("shutdown_msg").arg(win.shutdownLeft)
+            text: (i18n.language, i18n.t("shutdown_msg2")).arg(win.shutdownActionLabel).arg(win.shutdownLeft)
             color: Theme.t1; font.pixelSize: 13; font.family: Theme.fontSans
             wrapMode: Text.WordWrap
         }
@@ -2783,29 +1423,27 @@ Window {
 
     TourOverlay {
         id: tourOverlay
-        onPageRequested: function(page) { navRail.currentIndex = page }
+        onPageRequested: function(page) { win.currentPage = page }
         // step 0 is the welcome (centered, no spotlight); the rest spotlight the UI
         // bat/pose vary per step so all 3 candidate SVGs (noto/twemoji/openmoji)
         // and poses (perch/hang, left/right) show in one run — for picking one.
         steps: (i18n.language, [
-            { page: 0, title: i18n.t("tour_s1_t"), text: i18n.t("tour_s1_d"),
-              rectFn: function() { return navRail.itemRect("rail", tourOverlay) } },
+            { page: 0, title: i18n.t("tour_s1_t"), text: i18n.t(win.layoutClassic ? "tour_s1_d" : "tour_s1_d_top"),
+              rectFn: function() { return win.navHost ? win.navHost.itemRect("rail", tourOverlay) : Qt.rect(0,0,0,0) } },
             { page: 0, title: i18n.t("tour_s2_t"), text: i18n.t("tour_s2_d"),
-              rectFn: function() { return win.rectIn(tbOpen, tourOverlay) } },
+              rectFn: function() { return win.rectIn(toolbar.tbOpen, tourOverlay) } },
             { page: 1, title: i18n.t("tour_s3_t"), text: i18n.t("tour_s3_d"),
-              rectFn: function() { return navRail.itemRect(1, tourOverlay) } },
-            { page: 2, title: i18n.t("tour_s4_t"), text: i18n.t("tour_s4_d"),
-              rectFn: function() { return navRail.itemRect(2, tourOverlay) } },
-            { page: 3, title: i18n.t("tour_s5_t"), text: i18n.t("tour_s5_d"),
-              rectFn: function() { return navRail.itemRect(3, tourOverlay) } },
+              rectFn: function() { return win.navHost ? win.navHost.itemRect(1, tourOverlay) : Qt.rect(0,0,0,0) } },
+            { page: 2, title: i18n.t("tour_s5_t"), text: i18n.t("tour_s5_d"),
+              rectFn: function() { return win.navHost ? win.navHost.itemRect(2, tourOverlay) : Qt.rect(0,0,0,0) } },
             { page: 0, title: i18n.t("tour_s6_t"), text: i18n.t("tour_s6_d"),
-              rectFn: function() { return navRail.itemRect("settings", tourOverlay) } }
+              rectFn: function() { return win.navHost ? win.navHost.itemRect("settings", tourOverlay) : Qt.rect(0,0,0,0) } }
         ])
     }
 
     // ================== TOP-LEVEL WINDOWS (lazy) ==================
     // Built on first open via Loader, not at startup — instantiating all of
-    // them eagerly (SettingsWindow alone is huge) stalled the UI thread for
+    // them eagerly stalled the UI thread for
     // seconds on launch and inflated memory. showWin() creates then shows.
     function showWin(loader) {
         loader.active = true
@@ -2819,9 +1457,13 @@ Window {
         return (Qt.platform.os === "windows" ? "file:///" : "file://") + encodeURI(p)
     }
     Loader { id: rssWinLoader;       active: false; sourceComponent: RssWindow {} }
-    Loader { id: settingsWinLoader;  active: false; sourceComponent: SettingsWindow {} }
     Loader { id: shortcutsWinLoader; active: false; sourceComponent: ShortcutsWindow {} }
-    Loader { id: statsWinLoader;     active: false; sourceComponent: StatisticsWindow {} }
+    Loader { id: statsWinLoader;     active: false; sourceComponent: StatisticsWindow { onOpenWrapped: win.showWrapped() } }
+    Loader { id: wrappedWinLoader;   active: false; sourceComponent: WrappedWindow {} }
+    function showWrapped() {
+        wrappedWinLoader.active = true
+        if (wrappedWinLoader.item) wrappedWinLoader.item.openFor(new Date().getFullYear())
+    }
     Loader { id: removedWinLoader;   active: false; sourceComponent: RemovedHistoryWindow {} }
     Loader { id: logWinLoader;       active: false; sourceComponent: LogViewerWindow {} }
     Loader { id: diagWinLoader;      active: false; sourceComponent: DiagnosticsWindow {} }
@@ -2836,9 +1478,39 @@ Window {
     Connections {
         target: session
         function onOpenPlayer(url, title, hash, fileIndex) {
+            gwOverlay.hide()
             playerWinLoader.active = true
             var w = playerWinLoader.item
             if (w) { w.show(); w.raise(); w.requestActivate(); w.openMedia(url, title, hash, fileIndex) }
+        }
+        function onWatchProgress(hash, percent) {
+            if (gwOverlay.phase === "buffering" && hash === gwOverlay.hash) gwOverlay.percent = percent
+        }
+        function onWatchFailed(title) { gwOverlay.fail(i18n.t("gw_failed").arg(title)) }
+    }
+
+    // Debrid: magnet → provider cache → direct link → built-in player.
+    Connections {
+        target: typeof debrid !== "undefined" ? debrid : null
+        ignoreUnknownSignals: true
+        function onStreamReady(url, name) {
+            gwOverlay.hide()
+            playerWinLoader.active = true
+            var w = playerWinLoader.item
+            if (w) { w.show(); w.raise(); w.requestActivate(); w.openMedia(url, name, "debrid", 0) }
+        }
+        function onErrorOccurred(msg) {
+            gwOverlay.hide()
+            win.notifyUser(debrid.providerName, msg, 2)
+        }
+        function onBusyChanged() {
+            if (debrid.busy) gwOverlay.show("buffering", debrid.providerName)
+            else if (gwOverlay.phase === "buffering") gwOverlay.hide()
+        }
+        function onStatusChanged() {
+            if (!debrid.busy) return
+            if (debrid.status !== "") gwOverlay.title = debrid.status
+            gwOverlay.percent = debrid.progress / 100
         }
     }
 
@@ -2848,10 +1520,18 @@ Window {
         target: typeof search !== "undefined" ? search : null
         ignoreUnknownSignals: true
         function onAddedTorrent(infoHash) {
-            navRail.currentIndex = 0
+            win.currentPage = 0
             selectAddedTimer.hash = infoHash || ""
             selectAddedTimer.tries = 0
             selectAddedTimer.restart()
+        }
+        // Get & Watch flow → drives the preparing overlay
+        function onWatchSearching(title) { gwOverlay.show("searching", title) }
+        function onWatchNoRelease(title) { gwOverlay.fail(i18n.t("gw_no_release").arg(title)) }
+        function onPrepareAndWatch(infoHash, title) {
+            gwOverlay.hash = infoHash
+            gwOverlay.phase = "buffering"
+            if (typeof session !== "undefined") session.watchWhenReady(infoHash, title)
         }
     }
     Timer {
@@ -2901,25 +1581,19 @@ Window {
     }
 
     Shortcut { sequences: [StandardKey.HelpContents]; onActivated: win.showWin(shortcutsWinLoader) }
-    Shortcut { sequence: "Ctrl+F"; onActivated: searchInput.forceActiveFocus() }
+    Shortcut { sequence: "Ctrl+F"; onActivated: filterBar.searchInput.forceActiveFocus() }
     Shortcut { sequence: "Ctrl+R"; onActivated: if (typeof session !== "undefined") session.forceRecheckSelected() }
-    Shortcut {
-        sequence: "F2"; enabled: win.hasSel
-        onActivated: inputPrompt.openWith(i18n.t("ctx_rename"), i18n.t("ctx_rename_prompt"), session.selectedName, "", function(t){ session.renameSelected(t) }, !session.selectedIsFolder())
-    }
-    // Delete → Remove dialog (an editable text field with focus overrides this,
-    // so it still deletes characters while typing). Mirrors F2 → Rename.
-    Shortcut { sequence: StandardKey.Delete; enabled: win.hasSel; onActivated: removeDlg.open() }
     // reorder queue: vertical in list, horizontal in grid (tiles sit side by side)
     Shortcut { sequence: "Ctrl+Up";    enabled: !win.gridView; onActivated: if (typeof session !== "undefined") session.queueUpSelected() }
     Shortcut { sequence: "Ctrl+Down";  enabled: !win.gridView; onActivated: if (typeof session !== "undefined") session.queueDownSelected() }
     Shortcut { sequence: "Ctrl+Left";  enabled: win.gridView;  onActivated: if (typeof session !== "undefined") session.queueUpSelected() }
     Shortcut { sequence: "Ctrl+Right"; enabled: win.gridView;  onActivated: if (typeof session !== "undefined") session.queueDownSelected() }
-    // navigate selection
-    Shortcut { sequence: "Up";    onActivated: win.moveSel(win.gridView ? -win.gridCols() : -1) }
-    Shortcut { sequence: "Down";  onActivated: win.moveSel(win.gridView ?  win.gridCols() :  1) }
-    Shortcut { sequence: "Left";  enabled: win.gridView; onActivated: win.moveSel(-1) }
-    Shortcut { sequence: "Right"; enabled: win.gridView; onActivated: win.moveSel(1) }
+    // navigate selection — suppressed while the command palette owns the keyboard
+    // (otherwise the arrows scroll the list behind it instead of its results)
+    Shortcut { sequence: "Up";    enabled: !cmdPalette.opened; onActivated: win.moveSel(win.gridView ? -win.gridCols() : -1) }
+    Shortcut { sequence: "Down";  enabled: !cmdPalette.opened; onActivated: win.moveSel(win.gridView ?  win.gridCols() :  1) }
+    Shortcut { sequence: "Left";  enabled: win.gridView && !cmdPalette.opened; onActivated: win.moveSel(-1) }
+    Shortcut { sequence: "Right"; enabled: win.gridView && !cmdPalette.opened; onActivated: win.moveSel(1) }
     Shortcut { sequence: "Ctrl+1"; onActivated: win.setFilter("all") }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.setFilter("downloading") }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.setFilter("seeding") }
@@ -2938,3 +1612,9 @@ Window {
         }
     }
 }
+
+
+
+
+
+

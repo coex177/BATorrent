@@ -24,7 +24,12 @@ struct TorrentInfo {
     QString stateDetail;   // why a downloading torrent isn't moving ("" when fine)
     bool paused;
     bool completed = false;
+    bool queued = false;   // paused by the download-queue cap, not the user
+    int queuePos = 0;      // 1-based position among queued torrents
     float ratio;
+    float availability = 0;     // distributed copies (swarm health)
+    qint64 totalUploaded = 0;
+    qint64 addedTime = 0;       // unix seconds
     QString category;
     QStringList tags;
     qint64 addedAt = 0;   // epoch seconds the torrent was added (0 = unknown)
@@ -50,6 +55,48 @@ struct TrackerInfo {
     QString url;
     int tier;
     QString status;
+};
+
+// Shared so the IEngine interface (and the IPC layer) can name them — moved out
+// of SessionManager's body for the engine/UI split.
+struct RemovedEntry {
+    QString hash;
+    QString name;
+    qint64 totalSize;
+    qint64 removedAt;     // unix seconds
+    QString resumePath;   // absolute path to the snapshot file
+};
+
+struct DetailedStats {
+    int dhtNodes = 0;
+    int peersCount = 0;
+    qint64 totalWasted = 0;       // redundant + failed bytes
+    int diskReadQueue = 0;
+    int diskWriteQueue = 0;
+    bool hasIncomingConnections = false;
+};
+
+// Advanced libtorrent tuning — exposed in Settings → Advanced. Lives here (not
+// nested in SessionManager) so IEngine and the IPC layer can name it.
+struct AdvancedSettings {
+    int aioThreads = 10;
+    int hashingThreads = 2;
+    int filePoolSize = 100;
+    int checkingMemUsage = 512;   // × 16KB = 8MB default
+    int diskIOReadMode = 0;       // 0=EnableOSCache, 1=DisableOSCache
+    int diskIOWriteMode = 0;      // 0=EnableOSCache, 1=DisableOSCache, 2=WriteThrough
+    int connectionsLimit = 500;
+    int connectionSpeed = 30;
+    int maxUploadsPerTorrent = 4;
+    int maxConnectionsPerTorrent = 100;
+    int unchokeSlotsLimit = 20;
+    int chokingAlgorithm = 0;     // 0=FixedSlots, 1=RateBased
+    int seedChokingAlgorithm = 0; // 0=RoundRobin, 1=FastestUpload, 2=AntiLeech
+    int sendBufferWatermark = 500; // KB
+    int outgoingPortMin = 0;
+    int outgoingPortMax = 0;
+    bool rateLimitIpOverhead = false;
+    bool ignoreLimitsOnLAN = true;
 };
 
 #endif

@@ -31,9 +31,54 @@ BatDialog {
     readonly property string appVer: (typeof themeBridge !== "undefined" && themeBridge.appVersion) ? themeBridge.appVersion : ""
 
     // ---- per-release dev note + highlights (SINGLE LANGUAGE; edit per release) ----
-    // Key by the exact app version. Rename/add the entry when you bump the version.
+    // Key by "major.minor" so hotfix bumps (4.3.0 → 4.3.1) keep the release's
+    // message; an exact-version key still wins when a patch needs its own note.
     readonly property var releaseContent: ({
-        "4.2.0": {
+        "4.5": {
+            note: "First thing you'll notice: navigation moved to a bar at the top. If you prefer the old sidebar, Settings > Appearance brings it back.<br><br>Search and Discover are now one page. Browse the catalog or just start typing, it all lives in the same place.<br><br>Games in the HUB got better too: Play works like you expect, and if a launch fails the app tells you instead of staying quiet. A bunch of smaller bugs are gone as well.<br><br><b>Found a bug or have an idea? <a href=\"https://docs.google.com/forms/d/e/1FAIpQLScdwLxWC-LB4wLuMI6_D3-QNPLNJPpzbob5LU0Y2yMnhaBFrg/viewform\">Tell me here</a></b>, I read everything.<br><br>Mateus"
+            , highlights: [
+                "New look: navigation moved to the top (the classic sidebar is in Settings)",
+                "Search and Discover merged into one Find page",
+                "Better games experience in the HUB, Play works like you expect",
+                "Windows: faster wheel scrolling and a tray menu that opens where you click",
+                "Seeding limits now mark torrents as completed automatically",
+                "Crash protection for broken updates",
+                "Light theme contrast fixes"
+            ]
+        },
+        "4.4.1": {
+            note: "Quick one: 4.4.0 wasn't opening on Windows for anyone. Sorry about that — fixed now in 4.4.1.<br><br>Everything below is what 4.4 was actually about.<br><br>This release came from my own annoyance: finding stuff dubbed or subtitled in my language was always a fight. Not anymore — turn on \"Prefer my language\" and releases in YOUR language (dubbed included) show up first. Running Jackett? Your indexers now plug straight into search too.<br><br><b>Found a bug or have an idea? <a href=\"https://docs.google.com/forms/d/e/1FAIpQLScdwLxWC-LB4wLuMI6_D3-QNPLNJPpzbob5LU0Y2yMnhaBFrg/viewform\">Tell me here</a></b> — I read everything.<br><br>— Mateus"
+            , highlights: [
+                "The app opens again on Windows (4.4.0 didn't, for anyone)",
+                "Dubbed / your-language releases first in streams and search",
+                "Jackett preset — your local indexers inside BATorrent search",
+                "Free up space without leaving the app — one click from the sidebar",
+                "Progress shows 99.9% until it's truly done — 100% is a promise again",
+                "Web UI password now stored hardened (PBKDF2)"
+            ]
+        },
+        "4.4": {
+            note: "This release started with my own frustration: finding anything dubbed or subtitled in my language was a fight. Not anymore — with \"Prefer my language\" on, releases in YOUR language (dubbed included) now lead the list, whatever language the app speaks. And if you run Jackett, your own indexers now plug straight into search.<br><br>Also fixed a couple of crashes people ran into. Got a bug or an idea? <a href=\"https://docs.google.com/forms/d/e/1FAIpQLScdwLxWC-LB4wLuMI6_D3-QNPLNJPpzbob5LU0Y2yMnhaBFrg/viewform\">tell me here</a>.<br><br>— Mateus"
+            , highlights: [
+                "Dubbed / your-language releases first in streams and search",
+                "Jackett preset — your local indexers inside BATorrent search",
+                "Free up space without leaving the app — one click from the sidebar",
+                "Fixed a couple of real crashes found via crash reporting",
+                "Progress shows 99.9% until it's truly done — 100% is a promise again",
+                "Web UI password now stored hardened (PBKDF2)"
+            ]
+        },
+        "4.3": {
+            note: "First, the elephant: 4.3.0 refused to start on Windows — a packaging mistake on my side, fixed in 4.3.1. Everything below is what 4.3 was meant to bring you.\n\nOver 3,000 of you have downloaded BATorrent — thank you, genuinely. I build this solo in my spare time, and I'm now looking for contributors to help it grow: if you write C++/QML (or want to translate it), come say hi on GitHub. New here? Press Ctrl/⌘+K anywhere — it's the fastest way around the whole app.\n\n— Mateus"
+            , highlights: [
+                "Resume your last movie or game right from the HUB",
+                "Rebuilt player with resume that finally sticks",
+                "Real seeds + best size in Discover and Search",
+                "Paused torrents stay paused after a restart",
+                "\"Delete permanently\" for when you're low on disk"
+            ]
+        },
+        "4.2": {
             note: "This one is about feel. No new pages \u2014 hundreds of small fixes instead: every dialog answers Esc, stalled torrents finally explain WHY, and deleting sends files to the trash, not the void. Press Ctrl/\u2318+K \u2014 that one's my favorite.\n\n\u2014 Mateus"
             , highlights: [
                 "Command palette (Ctrl/\u2318+K) \u2014 fuzzy-find any torrent or action",
@@ -42,7 +87,7 @@ BatDialog {
                 "Unified window look on macOS + keyboard focus everywhere"
             ]
         },
-        "4.0.0": {
+        "4.0": {
             note: "Over 2,000 of you have downloaded BATorrent — thank you, it means a lot. I build this in my spare time; your support keeps it going.\n\n— Mateus"
             , highlights: [
                 "Guided first-run tour of the whole app",
@@ -51,7 +96,9 @@ BatDialog {
             ]
         }
     })
-    readonly property var content: releaseContent[appVer] || ({ note: "", highlights: [] })
+    readonly property var content: releaseContent[appVer]
+        || releaseContent[appVer.split(".").slice(0, 2).join(".")]
+        || ({ note: "", highlights: [] })
     readonly property string noteText: content.note.length > 0
         ? content.note : (i18n.language, i18n.t("whatsnew_generic_note"))
 
@@ -133,8 +180,14 @@ BatDialog {
             Text {
                 Layout.fillWidth: true
                 text: dlg.noteText
+                // AutoText (the default): plain notes stay plain (their \n\n
+                // survives as real line breaks); a note with a link like 4.4's
+                // gets auto-detected as rich text — which is why THAT entry
+                // uses <br> instead of \n\n for its paragraph breaks.
+                linkColor: Theme.accentText
                 color: Theme.t2; font.pixelSize: 13; font.family: Theme.fontSans
                 wrapMode: Text.WordWrap; lineHeight: 1.45
+                onLinkActivated: function(link) { Qt.openUrlExternally(link) }
             }
         }
     }

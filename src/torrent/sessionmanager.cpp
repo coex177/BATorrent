@@ -2,10 +2,15 @@
 // Copyright (c) 2024-2026 Mateus Cruz
 // See LICENSE file for details
 
-#include "sessionmanager.h"
-#include "../app/logger.h"
-#include "../app/translator.h"
+#include "torrent/sessionmanager.h"
+#include "torrent/bandwidthschedule.h"
+#include "torrent/magnettrackers.h"
+#include "services/platform/logger.h"
+#include "services/platform/translator.h"
+#include "services/security/archivescan.h"
+#include "services/security/archiveextractor.h"
 #include <QProcess>
+#include <QCoreApplication>
 #include <QStorageInfo>
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/version.hpp>
@@ -14,6 +19,7 @@
 #include <libtorrent/bencode.hpp>
 #include <libtorrent/write_resume_data.hpp>
 #include <libtorrent/read_resume_data.hpp>
+#include <libtorrent/session_params.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <sstream>
 #include <libtorrent/peer_info.hpp>
@@ -31,10 +37,54 @@
 #include <QRegularExpression>
 #include <libtorrent/ip_filter.hpp>
 #include <boost/asio/ip/address.hpp>
+#include <QRandomGenerator>
+#include <algorithm>
+#ifdef BAT_LIBTORRENT_FORK
+#include <libtorrent/aux_/ip_helpers.hpp>   // fork-only geo-locality hook
+#endif
+
+// DHT routing table persisted across runs — a warm table means peer discovery
+// (and the download ramp) starts fast instead of re-bootstrapping the DHT from
+// scratch every launch (~30-60s cold). Path sits next to the resume data.
+static QString dhtStatePath()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+           .filePath(QStringLiteral("resume/session_state.dat"));
+}
+
+static lt::session_params loadStartupParams()
+{
+    // Top Sentry crasher (NATIVE-QT-4) is an AV inside libtorrent during
+    // session construction — a try/catch can't stop an access violation, so
+    // after a crashed boot the retry starts with fresh params instead of
+    // re-feeding whatever state killed the last run.
+    if (QSettings().value(QStringLiteral("bootCrashes"), 0).toInt() >= 1)
+        return lt::session_params();
+    QFile f(dhtStatePath());
+    if (f.open(QIODevice::ReadOnly)) {
+        const QByteArray data = f.readAll();
+        if (!data.isEmpty()) {
+            try {
+                return lt::read_session_params(
+                    lt::span<const char>(data.constData(), data.size()),
+                    lt::session_handle::save_dht_state);
+            } catch (...) { /* corrupt/incompatible state — start fresh */ }
+        }
+    }
+    return lt::session_params();
+}
 
 SessionManager::SessionManager(QObject *parent)
-    : QObject(parent)
+    : IEngine(parent), m_session(loadStartupParams())
 {
+    m_extractor = new ArchiveExtractor(this);
+    connect(m_extractor, &ArchiveExtractor::extractionStarted,
+            this, &SessionManager::extractionStarted);
+    connect(m_extractor, &ArchiveExtractor::extractionCompleted,
+            this, &SessionManager::extractionCompleted);
+    connect(m_extractor, &ArchiveExtractor::extractError,
+            this, &SessionManager::torrentError);
+
     lt::settings_pack pack;
     pack.set_int(lt::settings_pack::alert_mask,
                  lt::alert_category::status | lt::alert_category::error
@@ -54,6 +104,13 @@ SessionManager::SessionManager(QObject *parent)
 
     // Enable DHT for trackerless torrents / magnet links
     pack.set_bool(lt::settings_pack::enable_dht, true);
+    // libtorrent's default bootstrap is a single host (dht.libtorrent.org) —
+    // if it's down or ISP-blocked, a fresh install never joins the DHT and
+    // trackerless magnets can't fetch metadata. Same router list as qBittorrent.
+    pack.set_str(lt::settings_pack::dht_bootstrap_nodes,
+                 "dht.libtorrent.org:25401,router.bittorrent.com:6881,"
+                 "router.utorrent.com:6881,dht.transmissionbt.com:6881,"
+                 "dht.aelitis.com:6881");
 
     // PEX (Peer Exchange) is enabled by default in libtorrent 2.x
 
@@ -87,11 +144,40 @@ SessionManager::SessionManager(QObject *parent)
     pack.set_int(lt::settings_pack::checking_mem_usage, 512);
     pack.set_int(lt::settings_pack::aio_threads, 10);
     pack.set_int(lt::settings_pack::hashing_threads, 2);
-    pack.set_int(lt::settings_pack::file_pool_size, 100);
-    // Connection tuning: qBT defaults
+    // On libtorrent 2.0's mmap disk backend a large file pool throttles throughput
+    // (upstream #6561 — qBT's 5000 cut NVMe speed to a third); 40 matches our UI default.
+    pack.set_int(lt::settings_pack::file_pool_size, 40);
+    // The default 1 MiB disk write queue is the most common real-world download
+    // stall: when it fills, libtorrent stops requesting blocks. 6 MiB keeps the
+    // pipe full without a meaningful memory cost.
+    pack.set_int(lt::settings_pack::max_queued_disk_bytes, 6 * 1024 * 1024);
+    // Deeper outstanding-request pipeline helps high-BDP links (seedboxes, distant CDN/web-seeds).
+    pack.set_int(lt::settings_pack::max_out_request_queue, 1500);
+#ifdef BAT_LIBTORRENT_FORK
+    // Fork patch: fill that pipeline geometrically during slow-start instead of
+    // one block per received piece. Measured +9-27% on pipeline-bound transfers
+    // (fat link or high-RTT head) and neutral on bandwidth-capped swarms.
+    pack.set_bool(lt::settings_pack::piece_request_fast_ramp, true);
+#endif
+    // Connection tuning: qBT defaults, with a much faster connect ramp so a fresh
+    // torrent reaches a healthy peer set in seconds instead of slowly climbing.
     pack.set_int(lt::settings_pack::connections_limit, 500);
-    pack.set_int(lt::settings_pack::connection_speed, 30);
+    pack.set_int(lt::settings_pack::connection_speed, 150);
+    // Burst of outgoing connections fired the instant a torrent is added — this is
+    // the biggest lever on the slow first-30s ramp (default 30 trickles in). Capped
+    // by peers actually available, so it's harmless on small swarms.
+    pack.set_int(lt::settings_pack::torrent_connect_boost, 100);
     pack.set_int(lt::settings_pack::unchoke_slots_limit, 20);
+    // Announce to every tracker tier at once (qBittorrent default). Magnet
+    // trackers each land in their own tier, so without this only the first
+    // responsive tracker is announced — a real peer-discovery deficit.
+    pack.set_bool(lt::settings_pack::announce_to_all_tiers, true);
+    // Opt-in (default off): stop uTP from throttling our own TCP peers. Faster on
+    // a dedicated fat link; can add bufferbloat on a shared line, so it's gated.
+    pack.set_int(lt::settings_pack::mixed_mode_algorithm,
+                 QSettings("BATorrent", "BATorrent").value("preferTcp", false).toBool()
+                     ? lt::settings_pack::prefer_tcp
+                     : lt::settings_pack::peer_proportional);
     // Prefer RC4 encryption (like qBittorrent) — some private trackers
     // penalize clients that accept plaintext.
     pack.set_int(lt::settings_pack::allowed_enc_level,
@@ -132,6 +218,12 @@ SessionManager::SessionManager(QObject *parent)
     m_torrentExportDir = settings.value("torrentExportDir").toString();
     m_tempPath = settings.value("tempPath").toString();
     m_autoExtract = settings.value("autoExtract", false).toBool();
+    m_warnSuspiciousFiles = settings.value("warnSuspiciousFiles", true).toBool();
+    m_autoDefenderExclude = settings.value("autoDefenderExclude", false).toBool();
+    for (const auto &h : settings.value("securityWarned").toStringList())
+        m_securityWarned.insert(h);
+    for (const auto &r : settings.value("defenderExcludedRoots").toStringList())
+        m_defenderExcludedRoots.insert(r);
     m_autoExtractDelete = settings.value("autoExtractDelete", false).toBool();
     m_extractPasswords = settings.value("extractPasswords").toStringList();
     m_contentLayout = settings.value("contentLayout", 0).toInt();
@@ -139,8 +231,6 @@ SessionManager::SessionManager(QObject *parent)
     m_runOnComplete = settings.value("runOnComplete").toString();
     QString watchPath = settings.value("watchedFolder").toString();
     if (!watchPath.isEmpty()) setWatchedFolder(watchPath);
-    m_deleteTorrentOnAdd = settings.value("deleteTorrentOnAdd", false).toBool();
-    m_torrentMoveDir = settings.value("torrentMoveDir").toString();
 
     if (m_anonymousMode || m_forceIpv4 || m_ptMode) {
         // Apply immediately so the first session starts with the right pack;
@@ -170,14 +260,6 @@ SessionManager::SessionManager(QObject *parent)
         const QString joined = settings.value(key).toString();
         if (!joined.isEmpty())
             m_torrentTags[key] = joined.split(',', Qt::SkipEmptyParts);
-    }
-    settings.endGroup();
-
-    settings.beginGroup("torrentNames");
-    for (const auto &key : settings.childKeys()) {
-        const QString name = settings.value(key).toString();
-        if (!name.isEmpty())
-            m_customNames[key] = name;
     }
     settings.endGroup();
 
@@ -222,13 +304,25 @@ SessionManager::SessionManager(QObject *parent)
     if (settings.contains("encryptionMode")) setEncryptionMode(settings.value("encryptionMode").toInt());
     const QString persistedIface = settings.value("outgoingInterface").toString();
     if (!persistedIface.isEmpty()) setOutgoingInterface(persistedIface);
-    if (settings.value("listenPort", 0).toInt() > 0) setListenPort(settings.value("listenPort").toInt());
+    {
+        int port = settings.value("listenPort", 0).toInt();
+        // First run: stable random high port instead of libtorrent's 6881
+        // default — the 688x range is a classic ISP-throttle target and
+        // collides with other clients on the same machine (with
+        // listen_system_port_fallback off, a busy port = no listen socket
+        // at all). Persisted so the user's port forward stays valid.
+        // The "randomPort" toggle re-rolls it on every launch instead.
+        if (port <= 0 || settings.value("randomPort", false).toBool()) {
+            port = static_cast<int>(QRandomGenerator::global()->bounded(49152, 65536));
+            settings.setValue("listenPort", port);
+        }
+        setListenPort(port);
+    }
     setKillSwitchEnabled(settings.value("killSwitchEnabled", false).toBool());
     setAutoResumeOnReconnect(settings.value("autoResumeOnReconnect", false).toBool());
-    if (settings.value("proxyType", 0).toInt() != 0)
-        setProxySettings(settings.value("proxyType").toInt(), settings.value("proxyHost").toString(),
-                         settings.value("proxyPort").toInt(), settings.value("proxyUser").toString(),
-                         settings.value("proxyPass").toString());
+    m_proxy.loadFromSettings();
+    if (m_proxy.type() != 0)
+        m_session.apply_settings(m_proxy.settings(m_anonymousMode));
     setAutoMove(settings.value("autoMoveEnabled", false).toBool(),
                 settings.value("autoMovePath").toString());
     m_preallocate = settings.value("preallocate", false).toBool();
@@ -242,6 +336,18 @@ SessionManager::SessionManager(QObject *parent)
     // an earlier version only cleared the flag after 15s of uptime, so quitting
     // before then looked like a crash and made every torrent vanish for a launch.
     migrateLegacyResumeData();   // pull torrents from the pre-3.0 data dir if needed
+
+    // Remove-with-files whose retry window was cut short by an app quit: the
+    // schedule*() timers die with the process, silently leaving data on disk.
+    // The old session's file locks died with it too, so retry those now.
+    {
+        const QStringList t = settings.value("pendingTrashTargets").toStringList();
+        const QStringList d = settings.value("pendingDeleteTargets").toStringList();
+        settings.remove("pendingTrashTargets");
+        settings.remove("pendingDeleteTargets");
+        if (!t.isEmpty()) scheduleTrash(t, 0);
+        if (!d.isEmpty()) scheduleDelete(d, 0);
+    }
 
     const bool prevCrash = settings.value("startupInProgress", false).toBool();
     if (prevCrash) {
@@ -262,16 +368,38 @@ SessionManager::SessionManager(QObject *parent)
         QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
             .filePath(QStringLiteral("stats-history.json")));
 
+#ifdef BAT_LIBTORRENT_FORK
+    // Same-country peer biasing (fork engine hook). The DB loads async; our own
+    // country comes from external_ip_alert. Whichever lands last installs it.
+    connect(&m_geoIp, &GeoIpProvider::loaded, this, &SessionManager::tryInstallGeoClassifier);
+    m_geoIp.start(QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+                      .filePath(QStringLiteral("geoip")));
+#endif
+
     connect(&m_updateTimer, &QTimer::timeout, this, &SessionManager::updateStats);
     m_updateTimer.start(1000);
 }
 
 SessionManager::~SessionManager()
 {
+#ifdef BAT_LIBTORRENT_FORK
+    // Drop the geo classifier before the session tears down so no ranking call
+    // reaches into half-destroyed state. The lambda owns its own DB ref anyway.
+    lt::aux::set_geo_local_fn(nullptr);
+#endif
     // On shutdown we want a synchronous flush so resume files are durable
     // before Qt tears the app down. The periodic 5-min timer and the
     // piece_finished_alert path both call saveResumeData() (non-blocking).
     flushResumeDataBlocking(5000);
+    // Persist the DHT routing table for a warm start next launch (faster ramp).
+    try {
+        const lt::session_params p = m_session.session_state(lt::session_handle::save_dht_state);
+        const std::vector<char> buf = lt::write_session_params_buf(p, lt::session_handle::save_dht_state);
+        QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).mkpath(QStringLiteral("resume"));
+        QFile f(dhtStatePath());
+        if (f.open(QIODevice::WriteOnly))
+            f.write(buf.data(), static_cast<qint64>(buf.size()));
+    } catch (...) {}
     Logger::instance().log(Logger::Info, QStringLiteral("--- log closed ---"));
 }
 
@@ -328,15 +456,13 @@ void SessionManager::addTorrent(const QString &filePath, const QString &savePath
 
         lt::torrent_handle h = m_session.add_torrent(atp);
         m_torrents.push_back(h);
-        if (atp.ti)
-            m_addedTimes[QString::fromStdString((std::ostringstream() << atp.ti->info_hashes().get_best()).str())]
-                = QDateTime::currentSecsSinceEpoch();
         incrementTorrentCount();
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist now — an idle 0%/no-peer torrent never
 
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
-        disposeOfSourceTorrent(filePath);
+        scanTorrentForThreats(h, QString::fromStdString(h.status().name));   // .torrent: metadata is ready now
+        maybeAutoExcludeDefender(QString::fromStdString(atp.save_path));
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -379,14 +505,12 @@ void SessionManager::addTorrentWithPriorities(const QString &filePath,
 
         lt::torrent_handle h = m_session.add_torrent(atp);
         m_torrents.push_back(h);
-        if (atp.ti)
-            m_addedTimes[QString::fromStdString((std::ostringstream() << atp.ti->info_hashes().get_best()).str())]
-                = QDateTime::currentSecsSinceEpoch();
         incrementTorrentCount();
         if (m_autoRecheck && h.is_valid()) h.force_recheck();   // verify pre-existing data on disk
         stageResumeSave(h);   // persist immediately (see addTorrent)
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
-        disposeOfSourceTorrent(filePath);
+        scanTorrentForThreats(h, QString::fromStdString(h.status().name));   // .torrent: metadata is ready now
+        maybeAutoExcludeDefender(QString::fromStdString(atp.save_path));
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -415,6 +539,12 @@ void SessionManager::addMagnet(const QString &uri, const QString &savePath,
         atp.flags &= ~(lt::torrent_flags::auto_managed
                        | lt::torrent_flags::paused);
 
+        // Magnets often carry few or dead trackers and then depend entirely on
+        // DHT for the metadata fetch. Append well-known open trackers;
+        // onMetadataReceived strips them again if the torrent turns out private.
+        if (QSettings("BATorrent", "BATorrent").value("addPublicTrackers", true).toBool())
+            bat::appendPublicTrackers(atp.trackers, atp.tracker_tiers);
+
         // Real hash from the URI (known even before metadata, unlike a magnet's
         // torrent_status which reports all-zeros until then).
         const QString realHash = QString::fromStdString(
@@ -435,10 +565,11 @@ void SessionManager::addMagnet(const QString &uri, const QString &savePath,
         m_torrents.push_back(h);
         m_magnetAddedAt[h] = QDateTime::currentSecsSinceEpoch();
         m_magnetHashes[h] = realHash;
-        m_addedTimes[realHash] = QDateTime::currentSecsSinceEpoch();
+        persistMagnetParams(atp, realHash, savePath);
         incrementTorrentCount();
 
         emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
+        maybeAutoExcludeDefender(QString::fromStdString(atp.save_path));   // scan happens on metadata_received
     } catch (const std::exception &e) {
         emit torrentError(QString::fromStdString(e.what()));
     }
@@ -465,37 +596,23 @@ QStringList SessionManager::torrentFileNames(int index) const
 
 void SessionManager::checkMagnetTimeouts()
 {
-    if (m_magnetTimeoutSeconds <= 0 || m_magnetAddedAt.empty())
+    // No longer times anything out — a magnet used to be silently deleted
+    // after 5 minutes without metadata, which hit rare-seeder torrents hardest
+    // (exactly the ones that legitimately take longer to find a peer). The
+    // wait is now explained via stateDetail (torrentAt) instead; this pass
+    // just prunes the bookkeeping map so it can't grow unbounded.
+    if (m_magnetAddedAt.empty())
         return;
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
     for (auto it = m_magnetAddedAt.begin(); it != m_magnetAddedAt.end(); ) {
         const lt::torrent_handle &h = it->first;
-        if (!h.is_valid()) { it = m_magnetAddedAt.erase(it); continue; }
-        const lt::torrent_status st = cachedStatus(h);
-        if (st.has_metadata) {
-            // Done — metadata arrived, stop watching this magnet.
+        if (!h.is_valid() || cachedStatus(h).has_metadata)
             it = m_magnetAddedAt.erase(it);
-            continue;
-        }
-        if (now - it->second >= m_magnetTimeoutSeconds) {
-            QString name = QString::fromStdString(st.name);
-            if (name.isEmpty()) name = "magnet";
-            emit torrentError(QString("Metadata timeout: %1").arg(name));
-            // Remove the dead magnet so it doesn't sit forever consuming a
-            // queue slot.
-            int idx = -1;
-            for (int i = 0; i < static_cast<int>(m_torrents.size()); ++i) {
-                if (m_torrents[i] == h) { idx = i; break; }
-            }
-            it = m_magnetAddedAt.erase(it);
-            if (idx >= 0) removeTorrent(idx, false);
-            continue;
-        }
-        ++it;
+        else
+            ++it;
     }
 }
 
-void SessionManager::removeTorrent(int index, bool deleteFiles)
+void SessionManager::removeTorrent(int index, bool deleteFiles, bool permanent)
 {
     qDebug() << "[session] removeTorrent index:" << index << "deleteFiles:" << deleteFiles;
     if (index < 0 || index >= static_cast<int>(m_torrents.size()))
@@ -512,6 +629,12 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
         lt::torrent_status st = h.status();
         QString hash = QString::fromStdString(
             (std::ostringstream() << st.info_hashes.get_best()).str());
+        // Pre-metadata magnet: status reports an all-zeros hash, but its
+        // .resume file and per-torrent maps are keyed by the URI hash.
+        if (!st.has_metadata) {
+            auto mit = m_magnetHashes.find(h);
+            if (mit != m_magnetHashes.end()) hash = mit->second;
+        }
         QDir dir(resumeDataDir());
         QDir removedDir(QFileInfo(dir, "../removed").absoluteFilePath());
         if (!removedDir.exists()) removedDir.mkpath(".");
@@ -555,9 +678,6 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
         }
         if (m_torrentTags.remove(hash))
             QSettings("BATorrent", "BATorrent").remove("torrentTags/" + hash);
-        if (m_customNames.remove(hash))
-            QSettings("BATorrent", "BATorrent").remove("torrentNames/" + hash);
-        m_addedTimes.remove(hash);
         m_removedHashes.insert(hash);
         if (m_removedHashes.size() > 500) m_removedHashes.clear();
 
@@ -571,7 +691,7 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
         m_lastFastAt.erase(h);
         m_pendingResumeStripCheck.erase(h);
         m_magnetAddedAt.erase(h);
-        m_renameOldRoots.erase(h);
+        m_magnetHashes.erase(h);
 
         // "delete files" sends the data to the OS trash instead of erasing it —
         // recoverable removal is a safety net users expect from a desktop app.
@@ -586,7 +706,10 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
                 const auto &fs = ti->files();
                 for (const auto i : fs.file_range()) {
                     QString p = QString::fromStdString(std::string(fs.file_path(i)));
-                    p.replace(QLatin1Char('\\'), QLatin1Char('/'));   // libtorrent uses the native separator on Windows
+                    // libtorrent reports backslash paths on Windows; normalize so
+                    // multi-file torrents resolve to their top-level folder instead
+                    // of being trashed file-by-file (folder left behind).
+                    p.replace(QLatin1Char('\\'), QLatin1Char('/'));
                     const int slash = p.indexOf(QLatin1Char('/'));
                     tops.insert(slash > 0 ? p.left(slash) : p);
                 }
@@ -603,34 +726,21 @@ void SessionManager::removeTorrent(int index, bool deleteFiles)
                 trashTargets << QDir(savePath).filePath(base)
                              << QDir(savePath).filePath(base + QStringLiteral(".!bt"));
             }
+            // also the hidden partial-pieces sidecar (.{hash}.parts) — otherwise it
+            // lingers orphaned in the save folder after a remove-with-files
+            trashTargets << QDir(savePath).filePath(QStringLiteral(".") + hash + QStringLiteral(".parts"));
         }
 
-        // Stop the torrent before removing so libtorrent stops writing and starts
-        // releasing its file handles right away. The data can't be trashed while
-        // those handles are open (Windows sharing violation), and a busy torrent
-        // with many files can take several seconds to fully let go — so wait a
-        // couple of seconds, then retry with backoff over a generous window.
-        h.pause();
+        // An actively-downloading torrent still has its files open when we ask
+        // libtorrent to drop it; on Windows moveToTrash then hits a sharing
+        // violation and the data is silently left on disk. Pausing first starts
+        // the handle release immediately, and we retry on a backoff (~27s total)
+        // until the handles are gone instead of giving up after one attempt.
+        if (deleteFiles) h.pause();
         m_session.remove_torrent(h, {});
         if (!trashTargets.isEmpty()) {
-            auto remaining = std::make_shared<QStringList>(trashTargets);
-            auto attempt   = std::make_shared<int>(0);
-            auto trash     = std::make_shared<std::function<void()>>();
-            *trash = [this, remaining, attempt, trash]() {
-                QStringList stillLocked;
-                for (const QString &p : *remaining) {
-                    if (!QFileInfo::exists(p)) continue;            // gone (trashed, or never there)
-                    if (!QFile::moveToTrash(p)) stillLocked << p;   // handle not released yet
-                }
-                *remaining = stillLocked;
-                if (remaining->isEmpty()) return;
-                if (++(*attempt) >= 25) {                           // ~27s total before giving up
-                    qWarning() << "[session] moveToTrash gave up, left on disk:" << *remaining;
-                    return;
-                }
-                QTimer::singleShot(1000, this, *trash);
-            };
-            QTimer::singleShot(2000, this, *trash);
+            if (permanent) scheduleDelete(trashTargets, 0);
+            else scheduleTrash(trashTargets, 0);
         }
     } catch (const std::exception &e) {
         qWarning() << "[session] removeTorrent exception:" << e.what();
@@ -644,7 +754,14 @@ void SessionManager::pauseTorrent(int index)
     qDebug() << "[session] pauseTorrent index:" << index;
     if (index < 0 || index >= static_cast<int>(m_torrents.size()))
         return;
+    // is_valid first — pause() on an expired handle throws (std::terminate
+    // from the Qt event loop = the whole app closes)
+    if (!m_torrents[index].is_valid())
+        return;
     m_torrents[index].pause();
+    // persist the pause now — periodic/shutdown saves can run before this and
+    // otherwise the torrent reloads un-paused (resumes downloading on its own)
+    m_torrents[index].save_resume_data(lt::torrent_handle::save_info_dict);
 }
 
 void SessionManager::resumeTorrent(int index)
@@ -652,24 +769,33 @@ void SessionManager::resumeTorrent(int index)
     qDebug() << "[session] resumeTorrent index:" << index;
     if (index < 0 || index >= static_cast<int>(m_torrents.size()))
         return;
+    if (!m_torrents[index].is_valid())
+        return;
     // Resume on a completed torrent un-marks it — the user is explicitly
     // asking it to participate again, so the "frozen" flag has to clear.
     unmarkCompleted(index);
     m_torrents[index].resume();
+    m_torrents[index].save_resume_data(lt::torrent_handle::save_info_dict);
 }
 
 void SessionManager::pauseAll()
 {
     qDebug() << "[session] pauseAll";
-    for (auto &h : m_torrents)
+    for (auto &h : m_torrents) {
+        if (!h.is_valid()) continue;
         h.pause();
+        h.save_resume_data(lt::torrent_handle::save_info_dict);
+    }
 }
 
 void SessionManager::resumeAll()
 {
     qDebug() << "[session] resumeAll";
-    for (auto &h : m_torrents)
+    for (auto &h : m_torrents) {
+        if (!h.is_valid()) continue;
         h.resume();
+        h.save_resume_data(lt::torrent_handle::save_info_dict);
+    }
 }
 
 int SessionManager::torrentCount() const
@@ -696,6 +822,12 @@ TorrentInfo SessionManager::torrentAt(int index) const
     info.numSeeds = st.num_seeds;
     info.stateString = stateToString(st.state);
     info.paused = (st.flags & lt::torrent_flags::paused) != lt::torrent_flags_t{};
+    if (info.paused && m_queuePaused.count(m_torrents[index])) {
+        info.queued = true;
+        info.queuePos = 1;
+        for (int i = 0; i < index; ++i)
+            if (m_queuePaused.count(m_torrents[i])) ++info.queuePos;
+    }
     QString hash;
     if (st.has_metadata)
         hash = QString::fromStdString(
@@ -709,7 +841,13 @@ TorrentInfo SessionManager::torrentAt(int index) const
         info.downloadRate = 0;
         info.uploadRate = 0;
     } else if (info.paused) {
-        info.stateString = tr_("state_paused");
+        // "Stop seeding after download" pauses the handle directly (see
+        // onTorrentFinished) without going through markCompleted(), so a
+        // finished torrent otherwise reads as bare "Paused" — ambiguous
+        // about whether the download itself is done (reported by a user).
+        info.stateString = info.queued
+            ? tr_("state_queued").arg(info.queuePos)
+            : (info.progress >= 1.0f) ? tr_("state_paused_done") : tr_("state_paused");
         info.downloadRate = 0;
         info.uploadRate = 0;
     } else {
@@ -725,836 +863,55 @@ TorrentInfo SessionManager::torrentAt(int index) const
         if (st.errc)
             info.stateDetail = QString::fromStdString(st.errc.message());
         else if (info.numPeers == 0)
-            info.stateDetail = m_dhtEnabled ? tr_("state_no_peers_dht") : tr_("state_no_peers");
+            // candidates known but none connected yet = the "connecting" phase;
+            // nothing found at all = still searching the swarm
+            info.stateDetail = st.connect_candidates > 0
+                ? tr_("state_connecting")
+                : (m_dhtEnabled ? tr_("state_no_peers_dht") : tr_("state_no_peers"));
         else if (info.numSeeds == 0)
             info.stateDetail = tr_("state_no_seeds");
         else
             info.stateDetail = tr_("state_choked");
+    } else if (!info.paused && st.state == lt::torrent_status::downloading_metadata) {
+        // A rare-seeder magnet can take a long time to find a peer that'll
+        // hand over metadata — we used to give up and silently delete it
+        // after 5 minutes (issue reported by a user: "deleted without
+        // warning"). Explain the wait instead; the user decides when to quit.
+        auto it = m_magnetAddedAt.find(m_torrents[index]);
+        if (it != m_magnetAddedAt.end()) {
+            const qint64 mins = (QDateTime::currentSecsSinceEpoch() - it->second) / 60;
+            info.stateDetail = tr_("state_fetching_metadata").arg(mins);
+        }
+    } else if (!info.completed && !info.paused && info.progress < 1.0f
+               && st.state == lt::torrent_status::downloading
+               && info.downloadRate >= 1024 && info.numPeers > 0
+               && st.distributed_copies >= 0.0f && st.distributed_copies < 1.0f) {
+        // distributed_copies < 1 means some piece of this torrent isn't held by
+        // anyone currently in the swarm — the transfer can look healthy (decent
+        // rate, progress moving) right up until it needs that missing piece and
+        // stalls for good. Surface it early instead of only once it's stuck.
+        info.stateDetail = tr_("state_missing_pieces");
     }
 
     qint64 uploaded = st.total_payload_upload;
     qint64 downloaded = st.total_payload_download;
     info.ratio = downloaded > 0 ? static_cast<float>(uploaded) / static_cast<float>(downloaded) : 0.0f;
+    info.totalUploaded = st.all_time_upload;
+    info.availability = st.distributed_copies < 0 ? 0.0f : st.distributed_copies;
+    info.addedTime = static_cast<qint64>(st.added_time);
 
     if (!hash.isEmpty()) {
         info.category = m_categories.value(hash);
         info.tags = m_torrentTags.value(hash);
-        info.addedAt = m_addedTimes.value(hash, 0);
-        const QString custom = m_customNames.value(hash);
-        if (!custom.isEmpty()) info.name = custom;
     }
 
     return info;
 }
 
-std::vector<PeerInfo> SessionManager::peersAt(int index, int maxPeers) const
-{
-    std::vector<PeerInfo> result;
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return result;
-    if (!m_torrents[index].is_valid())
-        return result;
 
-    try {
-        std::vector<lt::peer_info> peers;
-        m_torrents[index].get_peer_info(peers);
-
-        // Cap huge swarms (9k+) to the most active peers before building the
-        // QString-heavy PeerInfo — the long tail isn't worth the work/UI cost.
-        if (maxPeers > 0 && peers.size() > static_cast<std::size_t>(maxPeers)) {
-            std::partial_sort(peers.begin(), peers.begin() + maxPeers, peers.end(),
-                [](const lt::peer_info &a, const lt::peer_info &b) {
-                    return (a.down_speed + a.up_speed) > (b.down_speed + b.up_speed);
-                });
-            peers.resize(maxPeers);
-        }
-
-        for (const auto &p : peers) {
-            PeerInfo pi;
-            try {
-                pi.ip = QString::fromStdString(p.ip.address().to_string());
-            } catch (...) { continue; }
-            pi.port = p.ip.port();
-            pi.downloadRate = p.down_speed;
-            pi.uploadRate = p.up_speed;
-            pi.progress = p.progress;
-            // Guard against corrupt/oversized client strings
-            if (p.client.size() < 256)
-                pi.client = QString::fromStdString(p.client);
-            result.push_back(pi);
-        }
-    } catch (const std::exception &e) {
-        qWarning() << "peersAt:" << e.what();
-    } catch (...) {
-        qWarning() << "peersAt: unknown exception";
-    }
-    return result;
-}
-
-std::vector<FileInfo> SessionManager::filesAt(int index) const
-{
-    std::vector<FileInfo> result;
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return result;
-    if (!m_torrents[index].is_valid())
-        return result;
-
-    auto ti = m_torrents[index].torrent_file();
-    if (!ti) return result;
-
-    std::vector<std::int64_t> fileProgress;
-    m_torrents[index].file_progress(fileProgress);
-
-    const auto &fs = ti->files();
-    for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
-        int idx = static_cast<int>(i);
-        FileInfo fi;
-        fi.path = QString::fromStdString(fs.file_path(i));
-        fi.size = fs.file_size(i);
-        fi.progress = (fi.size > 0 && idx < static_cast<int>(fileProgress.size()))
-            ? static_cast<float>(fileProgress[idx]) / fi.size : 0.0f;
-        fi.priority = static_cast<std::uint8_t>(m_torrents[index].file_priority(i));
-        result.push_back(fi);
-    }
-    return result;
-}
-
-std::vector<TrackerInfo> SessionManager::trackersAt(int index) const
-{
-    std::vector<TrackerInfo> result;
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return result;
-    if (!m_torrents[index].is_valid())
-        return result;
-
-    try {
-        auto trackers = m_torrents[index].trackers();
-        for (const auto &t : trackers) {
-            TrackerInfo ti;
-            ti.url = QString::fromStdString(t.url);
-            ti.tier = t.tier;
-            ti.status = "OK";
-            if (!t.endpoints.empty()) {
-                const auto &msg = t.endpoints[0].info_hashes[lt::protocol_version::V1].message;
-                if (!msg.empty())
-                    ti.status = QString::fromStdString(msg);
-            }
-            result.push_back(ti);
-        }
-    } catch (const std::exception &e) {
-        // Torrent may not be valid yet (metadata still downloading) — that's
-        // expected, but log everything else so unexpected libtorrent
-        // exceptions don't disappear.
-        qWarning() << "trackersAt:" << e.what();
-    } catch (...) {
-        qWarning() << "trackersAt: unknown exception";
-    }
-    return result;
-}
-
-void SessionManager::addTracker(int index, const QString &url)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return;
-    if (!m_torrents[index].is_valid()) return;   // add_tracker throws on an invalid handle
-    lt::announce_entry ae(url.toStdString());
-    m_torrents[index].add_tracker(ae);
-}
-
-void SessionManager::setFilePriority(int torrentIndex, int fileIndex, int priority)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return;
-    if (!m_torrents[torrentIndex].is_valid()) return;   // file_priority throws on an invalid handle
-    m_torrents[torrentIndex].file_priority(
-        lt::file_index_t(fileIndex),
-        static_cast<lt::download_priority_t>(static_cast<std::uint8_t>(priority)));
-}
-
-void SessionManager::setSequentialDownload(int index, bool sequential)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return;
-    if (sequential)
-        m_torrents[index].set_flags(lt::torrent_flags::sequential_download);
-    else
-        m_torrents[index].unset_flags(lt::torrent_flags::sequential_download);
-}
-
-bool SessionManager::isSequentialDownload(int index) const
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()) || !m_torrents[index].is_valid())
-        return false;
-    return (m_torrents[index].flags() & lt::torrent_flags::sequential_download)
-           != lt::torrent_flags_t{};
-}
-
-void SessionManager::prioritizeFilePieceBoundaries(int torrentIndex, int fileIndex)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return;
-    auto &h = m_torrents[torrentIndex];
-    if (!h.is_valid()) return;
-    auto ti = h.torrent_file();
-    if (!ti) return;
-    const auto &fs = ti->files();
-    if (fileIndex < 0 || fileIndex >= ti->num_files()) return;
-
-    const auto fIdx = lt::file_index_t(fileIndex);
-    const qint64 fileOffset = fs.file_offset(fIdx);
-    const qint64 fileSize   = fs.file_size(fIdx);
-    if (fileSize <= 0) return;
-    const int pieceSize = ti->piece_length();
-    if (pieceSize <= 0) return;
-    const int numPieces = ti->num_pieces();
-
-    const int firstPiece = int(fileOffset / pieceSize);
-    const int lastPiece  = int((fileOffset + fileSize - 1) / pieceSize);
-
-    // Boost 1% of the file's piece count at each end (like qBittorrent),
-    // with a minimum of 1 piece. This adapts to large files — a 96GB game
-    // gets ~150 pieces boosted vs the previous fixed 4+2.
-    const int filesPieces = lastPiece - firstPiece + 1;
-    const int numToBoost = std::max(1, static_cast<int>(std::ceil(filesPieces * 0.01)));
-    auto boost = [&](int p) {
-        if (p >= 0 && p < numPieces)
-            h.piece_priority(lt::piece_index_t(p), lt::download_priority_t(7));
-    };
-    for (int k = 0; k < numToBoost; ++k) boost(firstPiece + k);
-    for (int k = 0; k < numToBoost; ++k) boost(lastPiece - k);
-}
-
-// ---- streaming helpers (read by the local StreamServer) ----
-
-int SessionManager::torrentIndexByInfoHash(const QString &infoHash) const
-{
-    if (infoHash.isEmpty()) return -1;
-    for (int i = 0; i < static_cast<int>(m_torrents.size()); ++i)
-        if (torrentHash(i).compare(infoHash, Qt::CaseInsensitive) == 0)
-            return i;
-    return -1;
-}
-
-QString SessionManager::streamFilePath(int torrentIndex, int fileIndex) const
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size())) return {};
-    const auto &h = m_torrents[torrentIndex];
-    if (!h.is_valid()) return {};
-    auto ti = h.torrent_file();
-    if (!ti) return {};
-    const auto &fs = ti->files();
-    if (fileIndex < 0 || fileIndex >= ti->num_files()) return {};
-
-    const QString savePath = QString::fromStdString(h.status(lt::torrent_handle::query_save_path).save_path);
-    QString rel = QString::fromStdString(fs.file_path(lt::file_index_t(fileIndex)));
-    rel.replace('\\', '/');   // libtorrent uses the native separator on Windows
-    QString abs = savePath + QLatin1Char('/') + rel;
-
-    if (QFileInfo::exists(abs)) return abs;
-    // toggle the ".!bt" incomplete suffix — the on-disk name may lag the mapping
-    if (abs.endsWith(QStringLiteral(".!bt"))) {
-        const QString plain = abs.chopped(4);
-        if (QFileInfo::exists(plain)) return plain;
-    } else if (QFileInfo::exists(abs + QStringLiteral(".!bt"))) {
-        return abs + QStringLiteral(".!bt");
-    }
-    return abs;   // best guess (may not exist yet)
-}
-
-qint64 SessionManager::streamFileSize(int torrentIndex, int fileIndex) const
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size())) return 0;
-    const auto &h = m_torrents[torrentIndex];
-    if (!h.is_valid()) return 0;
-    auto ti = h.torrent_file();
-    if (!ti) return 0;
-    if (fileIndex < 0 || fileIndex >= ti->num_files()) return 0;
-    return ti->files().file_size(lt::file_index_t(fileIndex));
-}
-
-bool SessionManager::streamByteAvailable(int torrentIndex, int fileIndex, qint64 byteInFile) const
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size())) return false;
-    const auto &h = m_torrents[torrentIndex];
-    if (!h.is_valid()) return false;
-    auto ti = h.torrent_file();
-    if (!ti) return false;
-    if (fileIndex < 0 || fileIndex >= ti->num_files()) return false;
-    const int pieceSize = ti->piece_length();
-    if (pieceSize <= 0) return false;
-    const qint64 off = ti->files().file_offset(lt::file_index_t(fileIndex)) + byteInFile;
-    const int piece = int(off / pieceSize);
-    if (piece < 0 || piece >= ti->num_pieces()) return false;
-    return h.have_piece(lt::piece_index_t(piece));
-}
-
-qint64 SessionManager::streamContiguousAvailableBytes(int torrentIndex, int fileIndex,
-                                                      qint64 fromByte, qint64 cap) const
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size())) return 0;
-    const auto &h = m_torrents[torrentIndex];
-    if (!h.is_valid()) return 0;
-    auto ti = h.torrent_file();
-    if (!ti) return 0;
-    if (fileIndex < 0 || fileIndex >= ti->num_files()) return 0;
-    const int pieceSize = ti->piece_length();
-    if (pieceSize <= 0) return 0;
-    const auto &fs = ti->files();
-    const qint64 fileOffset = fs.file_offset(lt::file_index_t(fileIndex));
-    const qint64 fileSize   = fs.file_size(lt::file_index_t(fileIndex));
-    if (fromByte < 0 || fromByte >= fileSize) return 0;
-
-    const qint64 globalPos = fileOffset + fromByte;
-    const int numPieces = ti->num_pieces();
-    int piece = int(globalPos / pieceSize);
-    if (piece < 0 || piece >= numPieces || !h.have_piece(lt::piece_index_t(piece))) return 0;
-
-    // Extend across the contiguous run of available pieces.
-    qint64 availEndGlobal = qint64(piece + 1) * pieceSize;
-    while (availEndGlobal - globalPos < cap) {
-        const int next = int(availEndGlobal / pieceSize);
-        if (next >= numPieces || !h.have_piece(lt::piece_index_t(next))) break;
-        availEndGlobal = qint64(next + 1) * pieceSize;
-    }
-    availEndGlobal = qMin(availEndGlobal, fileOffset + fileSize);
-    return qMin(cap, availEndGlobal - globalPos);
-}
-
-void SessionManager::streamSetDeadlineWindow(int torrentIndex, int fileIndex,
-                                             qint64 startByte, int windowPieces)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size())) return;
-    auto &h = m_torrents[torrentIndex];
-    if (!h.is_valid()) return;
-    auto ti = h.torrent_file();
-    if (!ti) return;
-    if (fileIndex < 0 || fileIndex >= ti->num_files()) return;
-    const int pieceSize = ti->piece_length();
-    if (pieceSize <= 0) return;
-    const int numPieces = ti->num_pieces();
-    const qint64 off = ti->files().file_offset(lt::file_index_t(fileIndex)) + qMax<qint64>(0, startByte);
-    const int firstPiece = int(off / pieceSize);
-    for (int k = 0; k < windowPieces; ++k) {
-        const int p = firstPiece + k;
-        if (p < 0 || p >= numPieces) break;
-        if (h.have_piece(lt::piece_index_t(p))) continue;
-        h.piece_priority(lt::piece_index_t(p), lt::download_priority_t(7));
-        h.set_piece_deadline(lt::piece_index_t(p), k * 40);   // ms — increasing = playback order
-    }
-}
-
-void SessionManager::renameFile(int torrentIndex, int fileIndex,
-                                 const QString &newRelativePath)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return;
-    if (!m_torrents[torrentIndex].is_valid()) return;
-    m_torrents[torrentIndex].rename_file(
-        lt::file_index_t(fileIndex), newRelativePath.toStdString());
-}
-
-// Remove `root` and any empty subdirectories, but never anything containing a
-// file. Returns true when `root` itself is gone (so the caller can stop
-// retrying). Used to clear the empty folder libtorrent leaves behind after a
-// top-level rename re-roots every file into a new folder.
-static bool pruneEmptyDir(const QString &root)
-{
-    QDir dir(root);
-    if (!dir.exists()) return true;
-    const auto subdirs = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot
-                                           | QDir::Hidden | QDir::System);
-    for (const auto &sd : subdirs)
-        pruneEmptyDir(sd.absoluteFilePath());
-    // Files still present → the rename hasn't finished; leave it for next time.
-    if (!dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot
-                           | QDir::Hidden | QDir::System).isEmpty())
-        return false;
-    return QDir().rmdir(root);
-}
-
-void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return;
-    if (!m_torrents[torrentIndex].is_valid()) return;
-    const QString trimmed = newName.trimmed();
-    if (trimmed.isEmpty()) return;
-
-    lt::torrent_handle &h = m_torrents[torrentIndex];
-
-    // On-disk rename — only possible once metadata is present.
-    if (auto ti = h.torrent_file(); ti && ti->num_files() > 0) {
-        const lt::file_storage &fs = ti->files();
-        const std::string first = fs.file_path(lt::file_index_t(0));
-        const bool inRootFolder =
-            first.find('/') != std::string::npos || first.find('\\') != std::string::npos;
-
-        if (!inRootFolder) {
-            // Single file at the save-path root: the new name is the filename.
-            h.rename_file(lt::file_index_t(0), trimmed.toStdString());
-        } else {
-            // Re-root every file under the new top-level folder. Paths are read
-            // from the live snapshot (which already reflects prior renames and
-            // any ".!bt" in-progress suffix), so those are preserved.
-            // Take the root from a live path, not fs.name(): the metadata name
-            // never follows rename_file(), so after one rename it goes stale and
-            // every later rename silently matches nothing.
-            const std::size_t rootEnd = first.find_first_of("/\\");
-            const std::string oldRoot =
-                rootEnd == std::string::npos ? std::string() : first.substr(0, rootEnd);
-            const std::string newRoot = trimmed.toStdString();
-            if (!oldRoot.empty() && newRoot != oldRoot) {
-                for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
-                    std::string p = fs.file_path(i);
-                    if (p.size() > oldRoot.size()
-                        && p.compare(0, oldRoot.size(), oldRoot) == 0
-                        && (p[oldRoot.size()] == '/' || p[oldRoot.size()] == '\\'))
-                        h.rename_file(i, newRoot + p.substr(oldRoot.size()));
-                }
-                // libtorrent moves the files into the new folder but leaves the
-                // old (now-empty) one on disk. Remember it so the file_renamed
-                // alerts can prune it once every file has actually moved.
-                const QString save = QString::fromStdString(cachedStatus(h).save_path);
-                m_renameOldRoots[h] = QDir(save).filePath(QString::fromStdString(oldRoot));
-            }
-        }
-    }
-
-    const QString hash = torrentHash(torrentIndex);
-    if (!hash.isEmpty()) {
-        m_customNames[hash] = trimmed;
-        QSettings s("BATorrent", "BATorrent");
-        s.setValue("torrentNames/" + hash, trimmed);
-        s.sync();   // QSettings buffers; an unclean exit would drop the rename
-    }
-    emit torrentsUpdated();
-}
-
-bool SessionManager::torrentInFolder(int torrentIndex) const
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return false;
-    if (!m_torrents[torrentIndex].is_valid()) return false;
-    auto ti = m_torrents[torrentIndex].torrent_file();
-    if (!ti || ti->num_files() == 0) return false;
-    const std::string first = ti->files().file_path(lt::file_index_t(0));
-    return first.find_first_of("/\\") != std::string::npos;
-}
-
-void SessionManager::moveStorage(int torrentIndex, const QString &newSavePath)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return;
-    if (!m_torrents[torrentIndex].is_valid()) return;
-    m_torrents[torrentIndex].move_storage(newSavePath.toStdString());
-    // A move can leave the filesystem and libtorrent's piece map out of
-    // sync if any underlying file failed to move; re-checking is the safe
-    // default so the torrent doesn't keep re-downloading good pieces.
-}
-
-void SessionManager::replaceTrackers(int torrentIndex, const QStringList &urls)
-{
-    if (torrentIndex < 0 || torrentIndex >= static_cast<int>(m_torrents.size()))
-        return;
-    if (!m_torrents[torrentIndex].is_valid()) return;
-    std::vector<lt::announce_entry> entries;
-    entries.reserve(urls.size());
-    for (const QString &u : urls) {
-        if (u.trimmed().isEmpty()) continue;
-        entries.emplace_back(u.toStdString());
-    }
-    m_torrents[torrentIndex].replace_trackers(entries);
-}
-
-void SessionManager::setTorrentCategory(int index, const QString &category)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return;
-    QString hash = torrentHash(index);
-    if (hash.isEmpty())
-        return;
-
-    if (category.isEmpty())
-        m_categories.remove(hash);
-    else
-        m_categories[hash] = category;
-
-    // If the category has a save path and the torrent is still downloading,
-    // update the intended destination (temp path integration).
-    if (!category.isEmpty() && m_categorySavePaths.contains(category)) {
-        const QString &catPath = m_categorySavePaths[category];
-        if (!catPath.isEmpty()) {
-            lt::torrent_status st = cachedStatus(m_torrents[index]);
-            bool downloading = (st.state == lt::torrent_status::downloading
-                             || st.state == lt::torrent_status::downloading_metadata);
-            if (downloading) {
-                if (!m_tempPath.isEmpty() && QDir(m_tempPath).exists()) {
-                    m_torrentIntendedPath[hash] = catPath;
-                } else {
-                    m_torrents[index].move_storage(catPath.toStdString());
-                }
-            }
-        }
-    }
-}
-
-QStringList SessionManager::categories() const
-{
-    QStringList list = {"Movies", "Games", "Software", "Music", "Other"};
-    // Add any custom categories that aren't in the built-in list
-    for (auto it = m_categories.cbegin(); it != m_categories.cend(); ++it) {
-        if (!list.contains(it.value()) && !it.value().isEmpty())
-            list.append(it.value());
-    }
-    // Also include categories that have save paths but no torrent assigned yet
-    for (auto it = m_categorySavePaths.cbegin(); it != m_categorySavePaths.cend(); ++it) {
-        if (!list.contains(it.key()))
-            list.append(it.key());
-    }
-    return list;
-}
-
-void SessionManager::setCategorySavePath(const QString &category, const QString &path)
-{
-    if (path.isEmpty())
-        m_categorySavePaths.remove(category);
-    else
-        m_categorySavePaths[category] = path;
-    QSettings s("BATorrent", "BATorrent");
-    s.beginGroup("categorySavePaths");
-    if (path.isEmpty()) s.remove(category);
-    else s.setValue(category, path);
-    s.endGroup();
-}
-
-QString SessionManager::categorySavePath(const QString &category) const
-{
-    return m_categorySavePaths.value(category);
-}
-
-QMap<QString, QString> SessionManager::allCategorySavePaths() const
-{
-    return m_categorySavePaths;
-}
-
-QStringList SessionManager::torrentTags(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return {};
-    return m_torrentTags.value(hash);
-}
-
-void SessionManager::setTorrentTags(int index, const QStringList &tags)
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return;
-    // Strip empty/whitespace entries, dedupe case-insensitively.
-    QStringList clean;
-    for (const QString &raw : tags) {
-        QString t = raw.trimmed();
-        if (t.isEmpty()) continue;
-        bool dup = false;
-        for (const QString &e : clean) if (e.compare(t, Qt::CaseInsensitive) == 0) { dup = true; break; }
-        if (!dup) clean.append(t);
-    }
-    QSettings s("BATorrent", "BATorrent");
-    if (clean.isEmpty()) {
-        m_torrentTags.remove(hash);
-        s.remove("torrentTags/" + hash);
-    } else {
-        m_torrentTags[hash] = clean;
-        s.setValue("torrentTags/" + hash, clean.join(","));
-    }
-    emit torrentsUpdated();
-}
-
-QStringList SessionManager::allTags() const
-{
-    QSet<QString> seen;
-    for (auto it = m_torrentTags.cbegin(); it != m_torrentTags.cend(); ++it)
-        for (const QString &t : it.value()) seen.insert(t);
-    QStringList out(seen.begin(), seen.end());
-    std::sort(out.begin(), out.end(), [](const QString &a, const QString &b) {
-        return a.compare(b, Qt::CaseInsensitive) < 0;
-    });
-    return out;
-}
-
-std::vector<bool> SessionManager::piecesAt(int index) const
-{
-    std::vector<bool> result;
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return result;
-    if (!m_torrents[index].is_valid())
-        return result;
-
-    lt::torrent_status st = m_torrents[index].status(lt::torrent_handle::query_pieces);
-    int numPieces = st.pieces.size();
-    result.resize(numPieces, false);
-    for (int i = 0; i < numPieces; ++i)
-        result[i] = st.pieces[lt::piece_index_t(i)];
-
-    return result;
-}
-
-void SessionManager::setDownloadLimit(int kbps)
-{
-    // Treat "user-set" as the normal rate. When alt-speed mode is active
-    // libtorrent's currently-applied limit is the alt value; we don't want
-    // the user's preferences UI to silently clobber the alt value, and we
-    // don't want our own scheduler to clobber the user's new normal when it
-    // restores. So always update m_normalDownLimit, and only push to
-    // libtorrent immediately if alt mode isn't active.
-    m_normalDownLimit = kbps;
-    QSettings("BATorrent", "BATorrent").setValue("downloadLimit", kbps);
-    if (m_altSpeedsActive)
-        return;
-    lt::settings_pack pack;
-    pack.set_int(lt::settings_pack::download_rate_limit, kbps > 0 ? kbps * 1024 : 0);
-    m_session.apply_settings(pack);
-}
-
-void SessionManager::setUploadLimit(int kbps)
-{
-    m_normalUpLimit = kbps;
-    QSettings("BATorrent", "BATorrent").setValue("uploadLimit", kbps);
-    if (m_altSpeedsActive)
-        return;
-    lt::settings_pack pack;
-    pack.set_int(lt::settings_pack::upload_rate_limit, kbps > 0 ? kbps * 1024 : 0);
-    m_session.apply_settings(pack);
-}
-
-int SessionManager::downloadLimit() const
-{
-    // Always return the user-set "normal" preference; the alt value lives in
-    // m_altDownLimit and is read via altDownloadLimit().
-    return m_normalDownLimit;
-}
-
-int SessionManager::uploadLimit() const
-{
-    return m_normalUpLimit;
-}
-
-void SessionManager::setListenPort(int port)
-{
-    lt::settings_pack pack;
-    QString listenAddr = "0.0.0.0";
-    if (!m_outgoingInterface.isEmpty()) {
-        QNetworkInterface ni = QNetworkInterface::interfaceFromName(m_outgoingInterface);
-        for (const auto &entry : ni.addressEntries()) {
-            if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol) {
-                listenAddr = entry.ip().toString();
-                break;
-            }
-        }
-    }
-    QString iface = QString("%1:%2").arg(listenAddr).arg(port);
-    pack.set_str(lt::settings_pack::listen_interfaces, iface.toStdString());
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("listenPort", port);
-}
-
-int SessionManager::listenPort() const
-{
-    // Prefer the configured value. m_session.listen_port() reports the live
-    // socket, which reads 0 or stale right after a re-bind (libtorrent applies
-    // listen_interfaces asynchronously) — that made the settings field appear
-    // to "reset" to the old port. Fall back to the live port only when unset.
-    const int configured = QSettings("BATorrent", "BATorrent").value("listenPort", 0).toInt();
-    return configured > 0 ? configured : m_session.listen_port();
-}
-
-void SessionManager::setMaxConnections(int max)
-{
-    lt::settings_pack pack;
-    pack.set_int(lt::settings_pack::connections_limit, max);
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("maxConnections", max);
-}
-
-int SessionManager::maxConnections() const
-{
-    return m_session.get_settings().get_int(lt::settings_pack::connections_limit);
-}
-
-void SessionManager::setDhtEnabled(bool enabled)
-{
-    m_dhtEnabled = enabled;
-    lt::settings_pack pack;
-    pack.set_bool(lt::settings_pack::enable_dht, enabled);
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("dhtEnabled", enabled);
-}
-
-bool SessionManager::dhtEnabled() const
-{
-    return m_dhtEnabled;
-}
-
-void SessionManager::setUtpEnabled(bool enabled)
-{
-    m_utpEnabled = enabled;
-    lt::settings_pack pack;
-    pack.set_bool(lt::settings_pack::enable_outgoing_utp, enabled);
-    pack.set_bool(lt::settings_pack::enable_incoming_utp, enabled);
-    // Always keep TCP available so peer connectivity doesn't collapse when
-    // uTP is off; the user just biases libtorrent's transport choice.
-    pack.set_bool(lt::settings_pack::enable_outgoing_tcp, true);
-    pack.set_bool(lt::settings_pack::enable_incoming_tcp, true);
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("utpEnabled", enabled);
-}
-
-bool SessionManager::utpEnabled() const
-{
-    return m_utpEnabled;
-}
-
-void SessionManager::setAnonymousMode(bool enabled)
-{
-    qDebug() << "[session] anonymousMode:" << enabled;
-    m_anonymousMode = enabled;
-    lt::settings_pack pack;
-    pack.set_bool(lt::settings_pack::anonymous_mode, enabled);
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("anonymousMode", enabled);
-}
-
-bool SessionManager::anonymousMode() const { return m_anonymousMode; }
-
-void SessionManager::setForceIpv4(bool enabled)
-{
-    qDebug() << "[session] forceIpv4:" << enabled;
-    m_forceIpv4 = enabled;
-    lt::settings_pack pack;
-    int port = listenPort();
-    if (port <= 0) port = 6881;
-    // listen_interfaces format: "ip:port[,ip:port]..." — drop the v6 entry
-    // (0.0.0.0 only) when force-v4 is on; otherwise bind both stacks.
-    QString iface = enabled
-        ? QString("0.0.0.0:%1").arg(port)
-        : QString("0.0.0.0:%1,[::]:%1").arg(port);
-    pack.set_str(lt::settings_pack::listen_interfaces, iface.toStdString());
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("forceIpv4", enabled);
-}
-
-bool SessionManager::forceIpv4() const { return m_forceIpv4; }
-
-void SessionManager::setPtMode(bool enabled)
-{
-    qDebug() << "[session] ptMode:" << enabled;
-    m_ptMode = enabled;
-    lt::settings_pack pack;
-    pack.set_bool(lt::settings_pack::enable_dht, !enabled && m_dhtEnabled);
-    pack.set_bool(lt::settings_pack::enable_lsd, !enabled);
-    // PEX has no global on/off in libtorrent 2.x; it's disabled per-torrent
-    // via the disable_pex flag at add time. Existing torrents stay as-is.
-    pack.set_bool(lt::settings_pack::announce_to_all_trackers, enabled);
-    pack.set_bool(lt::settings_pack::announce_to_all_tiers, enabled);
-    pack.set_bool(lt::settings_pack::anonymous_mode, enabled || m_anonymousMode);
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("ptMode", enabled);
-}
-
-bool SessionManager::ptMode() const { return m_ptMode; }
-
-void SessionManager::setBlockLeecherClients(bool enabled)
-{
-    qDebug() << "[session] blockLeechers:" << enabled;
-    m_blockLeechers = enabled;
-    QSettings("BATorrent", "BATorrent").setValue("blockLeechers", enabled);
-}
-
-bool SessionManager::blockLeecherClients() const { return m_blockLeechers; }
-int SessionManager::blockedLeecherCount() const { return m_blockedLeecherCount; }
-
-void SessionManager::checkAndBlockLeechers()
-{
-    if (!m_blockLeechers) return;
-    static const QList<QByteArray> kLeecherPrefixes = {
-        "-SD", "-XL", "XL", "-DL", "-QD", "-BN", "-SP",
-    };
-    lt::ip_filter filter = m_session.get_ip_filter();
-    bool filterChanged = false;
-    for (auto &h : m_torrents) {
-        if (!h.is_valid()) continue;
-        std::vector<lt::peer_info> peers;
-        try { h.get_peer_info(peers); } catch (...) { continue; }
-        for (const auto &p : peers) {
-            QByteArray pid(p.pid.data(), 8);
-            for (const auto &prefix : kLeecherPrefixes) {
-                if (pid.startsWith(prefix)) {
-                    h.connect_peer(p.ip, lt::peer_source_flags_t{});
-                    try {
-                        auto addr = p.ip.address();
-                        filter.add_rule(addr, addr, lt::ip_filter::blocked);
-                        filterChanged = true;
-                    } catch (...) { /* malformed peer address — skip blocking it */ }
-                    ++m_blockedLeecherCount;
-                    qDebug() << "[session] blocked leecher peer:" << QString::fromStdString(p.ip.address().to_string()) << "client:" << pid.left(8);
-                    break;
-                }
-            }
-        }
-    }
-    if (filterChanged)
-        m_session.set_ip_filter(filter);
-}
-
-void SessionManager::setEncryptionMode(int mode)
-{
-    m_encryptionMode = mode;
-    lt::settings_pack pack;
-    int policy;
-    switch (mode) {
-    case 1: policy = lt::settings_pack::pe_forced; break;
-    case 2: policy = lt::settings_pack::pe_disabled; break;
-    default: policy = lt::settings_pack::pe_enabled; break;
-    }
-    pack.set_int(lt::settings_pack::out_enc_policy, policy);
-    pack.set_int(lt::settings_pack::in_enc_policy, policy);
-    m_session.apply_settings(pack);
-    QSettings("BATorrent", "BATorrent").setValue("encryptionMode", mode);
-}
-
-int SessionManager::encryptionMode() const
-{
-    return m_encryptionMode;
-}
-
-void SessionManager::setSeedRatioLimit(float ratio)
-{
-    m_seedRatioLimit = ratio;
-    QSettings("BATorrent", "BATorrent").setValue("seedRatioLimit", ratio);
-}
-
-float SessionManager::seedRatioLimit() const
-{
-    return m_seedRatioLimit;
-}
-
-void SessionManager::setStopAfterDownload(bool enabled)
-{
-    m_stopAfterDownload = enabled;
-}
-
-bool SessionManager::stopAfterDownload() const
-{
-    return m_stopAfterDownload;
-}
-
-void SessionManager::setMaxSeedSeconds(qint64 seconds)
-{
-    m_maxSeedSeconds = seconds;
-}
-
-qint64 SessionManager::maxSeedSeconds() const
-{
-    return m_maxSeedSeconds;
-}
+// Global session configuration (rate limits, listen port, connection cap,
+// DHT/uTP/anonymous/PT toggles, encryption, seed-ratio) + leecher-client
+// blocking live in sessionmanager_config.cpp.
 
 QString SessionManager::torrentHash(int index) const
 {
@@ -1576,240 +933,9 @@ QString SessionManager::torrentHash(int index) const
         (std::ostringstream() << st.info_hashes.get_best()).str());
 }
 
-void SessionManager::setTorrentStopAfterDownload(int index, int value)
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return;
-    if (value < 0)
-        m_perTorrentStopAfter.remove(hash);
-    else
-        m_perTorrentStopAfter[hash] = value ? 1 : 0;
-}
-
-int SessionManager::torrentStopAfterDownload(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return -1;
-    return m_perTorrentStopAfter.value(hash, -1);
-}
-
-void SessionManager::setTorrentMaxSeedSeconds(int index, qint64 seconds)
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return;
-    if (seconds < 0)
-        m_perTorrentMaxSeed.remove(hash);
-    else
-        m_perTorrentMaxSeed[hash] = seconds;
-}
-
-qint64 SessionManager::torrentMaxSeedSeconds(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return -1;
-    return m_perTorrentMaxSeed.value(hash, -1);
-}
-
-void SessionManager::stopSeedingTorrent(int index)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return;
-    m_torrents[index].pause();
-}
-
-void SessionManager::setSuperSeeding(int index, bool on)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return;
-    if (!m_torrents[index].is_valid()) return;
-    qDebug() << "[session] superSeeding index:" << index << "on:" << on;
-    if (on)
-        m_torrents[index].set_flags(lt::torrent_flags::super_seeding);
-    else
-        m_torrents[index].unset_flags(lt::torrent_flags::super_seeding);
-}
-
-bool SessionManager::isSuperSeeding(int index) const
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return false;
-    if (!m_torrents[index].is_valid()) return false;
-    return (m_torrents[index].flags() & lt::torrent_flags::super_seeding) != lt::torrent_flags_t{};
-}
-
-void SessionManager::setForceStart(int index, bool on)
-{
-    qDebug() << "[session] forceStart index:" << index << "on:" << on;
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return;
-    if (on) {
-        m_forceStartHashes.insert(hash);
-        // Resume so the user sees immediate effect — force-start that
-        // remains paused would be confusing.
-        if (m_torrents[index].is_valid())
-            m_torrents[index].resume();
-        // Drop from queue-paused set so enforceDownloadQueue doesn't keep
-        // pausing it.
-        m_queuePaused.erase(m_torrents[index]);
-    } else {
-        m_forceStartHashes.remove(hash);
-    }
-    QSettings("BATorrent", "BATorrent").setValue(
-        "forceStartHashes", QStringList(m_forceStartHashes.values()));
-    emit torrentsUpdated();
-}
-
-bool SessionManager::isForceStart(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return false;
-    return m_forceStartHashes.contains(hash);
-}
-
-void SessionManager::setTorrentDownloadLimit(int index, int kbps)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return;
-    if (!m_torrents[index].is_valid()) return;
-    if (kbps < 0) kbps = 0;
-    QString hash = torrentHash(index);
-    QSettings settings("BATorrent", "BATorrent");
-    if (kbps == 0) {
-        m_perTorrentDownLimit.remove(hash);
-        settings.remove("torrentDownLimit/" + hash);
-    } else {
-        m_perTorrentDownLimit[hash] = kbps;
-        settings.setValue("torrentDownLimit/" + hash, kbps);
-    }
-    // libtorrent takes bytes/sec; 0 = unlimited at the handle level.
-    m_torrents[index].set_download_limit(kbps * 1024);
-}
-
-void SessionManager::setTorrentUploadLimit(int index, int kbps)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return;
-    if (!m_torrents[index].is_valid()) return;
-    if (kbps < 0) kbps = 0;
-    QString hash = torrentHash(index);
-    QSettings settings("BATorrent", "BATorrent");
-    if (kbps == 0) {
-        m_perTorrentUpLimit.remove(hash);
-        settings.remove("torrentUpLimit/" + hash);
-    } else {
-        m_perTorrentUpLimit[hash] = kbps;
-        settings.setValue("torrentUpLimit/" + hash, kbps);
-    }
-    m_torrents[index].set_upload_limit(kbps * 1024);
-}
-
-int SessionManager::torrentDownloadLimit(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return 0;
-    return m_perTorrentDownLimit.value(hash, 0);
-}
-
-int SessionManager::torrentUploadLimit(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return 0;
-    return m_perTorrentUpLimit.value(hash, 0);
-}
-
-void SessionManager::markCompleted(int index)
-{
-    qDebug() << "[session] markCompleted index:" << index;
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return;
-    auto &h = m_torrents[index];
-    if (!h.is_valid()) return;
-    lt::torrent_status st = cachedStatus(h);
-    if (!st.has_metadata) return;
-    QString hash = QString::fromStdString(
-        (std::ostringstream() << st.info_hashes.get_best()).str());
-    if (m_completedTorrents.contains(hash)) return;
-    m_completedTorrents.insert(hash);
-    saveCompletedSet();
-    // Freeze it completely: priority 0 on every file so libtorrent never re-downloads
-    // anything — even if the user deletes the extracted archives and a recheck later
-    // finds them missing. Pause alone doesn't stop a fastresume-rejected recheck.
-    if (auto ti = h.torrent_file())
-        h.prioritize_files(std::vector<lt::download_priority_t>(
-            static_cast<std::size_t>(ti->num_files()), lt::dont_download));
-    h.pause();
-    emit torrentsUpdated();
-}
-
-void SessionManager::unmarkCompleted(int index)
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return;
-    auto &h = m_torrents[index];
-    if (!h.is_valid()) return;
-    lt::torrent_status st = cachedStatus(h);
-    if (!st.has_metadata) return;
-    QString hash = QString::fromStdString(
-        (std::ostringstream() << st.info_hashes.get_best()).str());
-    if (m_completedTorrents.remove(hash)) {
-        // Un-freeze: restore default priority on every file and resume, so it seeds
-        // again (and re-fetches anything the user deleted, since they want it back).
-        if (auto ti = h.torrent_file())
-            h.prioritize_files(std::vector<lt::download_priority_t>(
-                static_cast<std::size_t>(ti->num_files()), lt::default_priority));
-        h.resume();
-        saveCompletedSet();
-        emit torrentsUpdated();
-    }
-}
-
-bool SessionManager::isTorrentCompleted(int index) const
-{
-    if (index < 0 || index >= static_cast<int>(m_torrents.size()))
-        return false;
-    const auto &h = m_torrents[index];
-    if (!h.is_valid()) return false;
-    lt::torrent_status st = cachedStatus(h);
-    if (!st.has_metadata) return false;
-    QString hash = QString::fromStdString(
-        (std::ostringstream() << st.info_hashes.get_best()).str());
-    return m_completedTorrents.contains(hash);
-}
-
-void SessionManager::saveCompletedSet()
-{
-    QSettings settings("BATorrent", "BATorrent");
-    settings.setValue("completedTorrents", QStringList(m_completedTorrents.values()));
-}
-
-void SessionManager::setAutoCompleteSeconds(qint64 seconds)
-{
-    if (seconds < 0) seconds = 0;
-    m_autoCompleteSeconds = seconds;
-    QSettings settings("BATorrent", "BATorrent");
-    settings.setValue("autoCompleteSeconds", m_autoCompleteSeconds);
-}
-
-qint64 SessionManager::autoCompleteSeconds() const
-{
-    return m_autoCompleteSeconds;
-}
-
-void SessionManager::checkAutoComplete()
-{
-    if (m_autoCompleteSeconds <= 0) return;
-    for (int i = 0; i < static_cast<int>(m_torrents.size()); ++i) {
-        auto &h = m_torrents[i];
-        if (!h.is_valid()) continue;
-        lt::torrent_status st = cachedStatus(h);
-        if (st.state != lt::torrent_status::seeding) continue;
-        if (st.flags & lt::torrent_flags::paused) continue;
-        if (!st.has_metadata) continue;
-        QString hash = QString::fromStdString(
-            (std::ostringstream() << st.info_hashes.get_best()).str());
-        if (m_completedTorrents.contains(hash)) continue;
-        qint64 seeded = std::chrono::duration_cast<std::chrono::seconds>(
-                            st.seeding_duration).count();
-        if (seeded >= m_autoCompleteSeconds)
-            markCompleted(i);
-    }
-}
+// Per-torrent overrides, force-start/super-seeding, the "completed" state +
+// auto-complete, and the effective-rule resolvers live in
+// sessionmanager_pertorrent.cpp.
 
 void SessionManager::forceRecheck(int index)
 {
@@ -1848,53 +974,11 @@ QString SessionManager::torrentMagnetUri(int index) const
     }
 }
 
-QByteArray SessionManager::captureResumeData(int index) const
-{
-    QString hash = torrentHash(index);
-    if (hash.isEmpty()) return {};
-    QFile f(QDir(resumeDataDir()).filePath(hash + ".resume"));
-    if (!f.open(QIODevice::ReadOnly)) return {};
-    return f.readAll();
-}
+// Fast-resume persistence (save/load/flush/persist, resumeDataDir, legacy
+// migration, capture/restoreFromResumeData) lives in
+// sessionmanager_persistence.cpp.
 
-bool SessionManager::restoreFromResumeData(const QByteArray &data)
-{
-    if (data.isEmpty()) return false;
-    lt::error_code ec;
-    lt::add_torrent_params atp = lt::read_resume_data(
-        lt::span<const char>(data.data(), data.size()), ec);
-    if (ec) return false;
-    atp.flags &= ~lt::torrent_flags::auto_managed;
-    if (atp.ti && atp.ti->priv()) {
-        atp.flags |= lt::torrent_flags::disable_dht
-                   | lt::torrent_flags::disable_lsd
-                   | lt::torrent_flags::disable_pex;
-    }
-    lt::torrent_handle h;
-    try {
-        h = m_session.add_torrent(atp);
-    } catch (const std::exception &) {
-        return false;
-    }
-    if (!h.is_valid()) return false;
-    m_torrents.push_back(h);
-    // Re-stage so the next save_resume_data call writes the .resume file
-    // (which removeTorrent had deleted).
-    h.save_resume_data(lt::torrent_handle::save_info_dict);
-    ++m_resumeOutstanding;
-    // Clear the "recently removed" guard so the resulting alert actually
-    // persists; otherwise processAlerts drops it on the floor.
-    if (auto st = h.status(); st.has_metadata) {
-        QString hash = QString::fromStdString(
-            (std::ostringstream() << st.info_hashes.get_best()).str());
-        m_removedHashes.remove(hash);
-    }
-    emit torrentAdded(static_cast<int>(m_torrents.size()) - 1);
-    emit torrentsUpdated();
-    return true;
-}
-
-QList<SessionManager::RemovedEntry> SessionManager::recentlyRemoved() const
+QList<RemovedEntry> SessionManager::recentlyRemoved() const
 {
     QList<RemovedEntry> out;
     QDir removedDir(QFileInfo(QDir(resumeDataDir()), "../removed").absoluteFilePath());
@@ -2031,270 +1115,7 @@ QString SessionManager::torrentRootPath(int index) const
     return save;
 }
 
-bool SessionManager::effectiveStopAfterDownload(const QString &hash) const
-{
-    int override_ = m_perTorrentStopAfter.value(hash, -1);
-    if (override_ >= 0)
-        return override_ == 1;
-    return m_stopAfterDownload;
-}
 
-qint64 SessionManager::effectiveMaxSeedSeconds(const QString &hash) const
-{
-    qint64 override_ = m_perTorrentMaxSeed.value(hash, -1);
-    if (override_ >= 0)
-        return override_;
-    return m_maxSeedSeconds;
-}
-
-void SessionManager::stageResumeSave(const lt::torrent_handle &h)
-{
-    if (!h.is_valid()) return;
-    h.save_resume_data(lt::torrent_handle::save_info_dict);
-    m_lastResumeSaveAt[h] = QDateTime::currentSecsSinceEpoch();
-    ++m_resumeOutstanding;
-}
-
-void SessionManager::saveResumeData()
-{
-    // QSettings writes are cheap (memory-backed; flushed on app exit) so we
-    // keep them inline here.
-    QSettings settings("BATorrent", "BATorrent");
-    settings.setValue("globalDownloaded", globalDownloaded());
-    settings.setValue("globalUploaded", globalUploaded());
-
-    settings.beginGroup("categories");
-    settings.remove("");
-    for (auto it = m_categories.cbegin(); it != m_categories.cend(); ++it)
-        settings.setValue(it.key(), it.value());
-    settings.endGroup();
-
-    settings.setValue("stopAfterDownload", m_stopAfterDownload);
-    settings.setValue("maxSeedSeconds", m_maxSeedSeconds);
-
-    settings.beginGroup("torrentStopAfter");
-    settings.remove("");
-    for (auto it = m_perTorrentStopAfter.cbegin(); it != m_perTorrentStopAfter.cend(); ++it)
-        settings.setValue(it.key(), it.value());
-    settings.endGroup();
-
-    settings.beginGroup("torrentMaxSeed");
-    settings.remove("");
-    for (auto it = m_perTorrentMaxSeed.cbegin(); it != m_perTorrentMaxSeed.cend(); ++it)
-        settings.setValue(it.key(), it.value());
-    settings.endGroup();
-
-    QDir dir(resumeDataDir());
-    if (!dir.exists())
-        dir.mkpath(".");
-
-    // Kick off async save_resume_data for every torrent with metadata.
-    // Counter represents *total* outstanding writes across batches; resetting
-    // it here would let prior-batch alerts decrement the shutdown reservation
-    // and let flushResumeDataBlocking exit before our writes actually land.
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
-    for (auto &h : m_torrents) {
-        if (!h.is_valid()) continue;
-        lt::torrent_status st = cachedStatus(h);
-        if (!st.has_metadata) continue;
-        h.save_resume_data(lt::torrent_handle::save_info_dict);
-        m_lastResumeSaveAt[h] = now;
-        ++m_resumeOutstanding;
-    }
-}
-
-void SessionManager::flushResumeDataBlocking(int timeoutMs)
-{
-    // Called from the destructor. Kick off the async requests, then turn
-    // the crank on alerts synchronously with a bounded total wait time so
-    // app shutdown is durable but never hangs indefinitely.
-    saveResumeData();
-
-    const auto deadline = std::chrono::steady_clock::now()
-                          + std::chrono::milliseconds(timeoutMs);
-
-    while (m_resumeOutstanding > 0
-           && std::chrono::steady_clock::now() < deadline) {
-        // Wait for the next alert up to whatever time is left in the
-        // deadline window. wait_for_alert returns immediately if alerts
-        // are already queued.
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now());
-        if (remaining.count() <= 0) break;
-        lt::alert const *a = m_session.wait_for_alert(remaining);
-        if (!a) break;
-        processAlerts();
-    }
-}
-
-bool SessionManager::persistResumeAlert(const lt::save_resume_data_alert *rd)
-{
-    QDir dir(resumeDataDir());
-    if (!dir.exists())
-        dir.mkpath(".");
-    auto buf = lt::write_resume_data_buf(rd->params);
-    // Read the info-hash from the alert's params, NOT from rd->handle.status().
-    // If the torrent was removed between the save_resume_data() request and
-    // this alert landing, the handle is invalid and .status() throws
-    // "invalid torrent handle" — which would terminate the app.
-    QString hash = QString::fromStdString(
-        (std::ostringstream() << rd->params.info_hashes.get_best()).str());
-    if (m_removedHashes.contains(hash))
-        return false;
-    QString filePath = dir.filePath(hash + ".resume");
-    // QSaveFile: temp + atomic rename, so a crash mid-write can't truncate the
-    // existing .resume (losing it loses the .!bt mapping and forces a redownload).
-    QSaveFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly))
-        return false;
-    if (file.write(buf.data(), static_cast<qint64>(buf.size())) != qint64(buf.size())) {
-        file.cancelWriting();
-        return false;
-    }
-    return file.commit();
-}
-
-void SessionManager::loadResumeData()
-{
-    QDir dir(resumeDataDir());
-    if (!dir.exists()) return;
-
-    QStringList files = dir.entryList({"*.resume"}, QDir::Files);
-    for (const auto &fileName : files) {
-        QFile file(dir.filePath(fileName));
-        if (!file.open(QIODevice::ReadOnly)) continue;
-
-        QByteArray data = file.readAll();
-        lt::error_code ec;
-        lt::add_torrent_params atp = lt::read_resume_data(
-            lt::span<const char>(data.data(), data.size()), ec);
-        if (ec) {
-            // Recovery path: the .resume bytes are corrupt (parse failed),
-            // but most fields might still be partial. Try to pull the
-            // embedded torrent_info out and re-add as a fresh torrent that
-            // will force-recheck against whatever's on disk. Better to lose
-            // the user's queue position than to silently drop their torrent
-            // — the pieces themselves are still on disk under save_path.
-            qWarning("loadResumeData: %s corrupt, attempting recovery (%s)",
-                     qPrintable(fileName), ec.message().c_str());
-            if (!atp.ti) {
-                // No torrent_info embedded — nothing we can recover from.
-                // Move the corrupt file aside so a future startup doesn't
-                // hit the same parse failure forever.
-                dir.rename(fileName, fileName + ".corrupt");
-                continue;
-            }
-            // Wipe state that read_resume_data may have partially set; we
-            // want libtorrent to start from scratch on this torrent.
-            atp.flags &= ~lt::torrent_flags::paused;
-            atp.have_pieces.clear();
-            atp.verified_pieces.clear();
-        }
-        const bool recoveredFromCorrupt = static_cast<bool>(ec);
-
-        // Manual queue management — never let libtorrent's auto-manager
-        // override user pause state on resumed torrents.
-        atp.flags &= ~lt::torrent_flags::auto_managed;
-        // BEP-27: enforce private flag even on legacy resume data that
-        // predates the addTorrent fix.
-        if (atp.ti && atp.ti->priv()) {
-            atp.flags |= lt::torrent_flags::disable_dht
-                       | lt::torrent_flags::disable_lsd
-                       | lt::torrent_flags::disable_pex;
-        }
-
-        // Reconcile the ".!bt" incomplete-suffix mapping with what's on disk. A
-        // resume/strip race can leave the saved mapping pointing at "X.!bt" while
-        // the finished data sits at "X" (or vice-versa) — libtorrent then can't
-        // find it and re-downloads a torrent that's already complete. Point each
-        // file at whichever variant has full-size data on disk; the recheck still
-        // hash-validates, so a wrong guess just re-downloads (no data loss).
-        if (atp.ti) {
-            const QString savePath = QString::fromStdString(atp.save_path);
-            const auto &fs = atp.ti->files();
-            const auto &prio = atp.file_priorities;
-            bool allWantedFullSize = fs.num_files() > 0;
-            for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
-                std::string eff = atp.renamed_files.count(i) ? atp.renamed_files[i]
-                                                             : fs.file_path(i);
-                const bool suffixed = eff.size() >= 4 && eff.compare(eff.size() - 4, 4, ".!bt") == 0;
-                const std::string base = suffixed ? eff.substr(0, eff.size() - 4) : eff;
-                const std::int64_t wantSize = fs.file_size(i);
-                const QString basePath = QDir(savePath).filePath(
-                    QDir::fromNativeSeparators(QString::fromStdString(base)));
-                const QFileInfo plain(basePath), bt(basePath + QStringLiteral(".!bt"));
-                std::string chosen = eff;
-                if (plain.isFile() && plain.size() == wantSize)   chosen = base;
-                else if (bt.isFile() && bt.size() == wantSize)    chosen = base + ".!bt";
-                else {
-                    // Only files the user actually wants count toward completeness.
-                    // Stream-while-watch sets every non-video file (e.g. YTS's
-                    // .txt/.jpg) to priority 0, so they never hit disk — without
-                    // this guard the torrent looks "incomplete" and re-finishes
-                    // (re-firing "download complete") on every launch.
-                    const std::size_t idx = static_cast<std::size_t>(static_cast<int>(i));
-                    const bool wanted = idx >= prio.size() || prio[idx] != lt::dont_download;
-                    if (wanted) allWantedFullSize = false;
-                }
-                if (chosen != eff) atp.renamed_files[i] = chosen;
-            }
-            // All wanted files present at full size → complete for what the user
-            // kept. Load in seed_mode so libtorrent trusts it instead of
-            // re-checking/re-downloading on launch, and remember it as
-            // already-complete so the inevitable finish alert doesn't re-notify.
-            if (allWantedFullSize) {
-                atp.flags |= lt::torrent_flags::seed_mode;
-                const QString hash = QString::fromStdString(
-                    (std::ostringstream() << atp.ti->info_hashes().get_best()).str());
-                m_completedAtStartup.insert(hash);
-            }
-        }
-
-        lt::torrent_handle h;
-        try {
-            h = m_session.add_torrent(atp);
-        } catch (const std::exception &e) {
-            qWarning("loadResumeData: skipping %s: %s",
-                     qPrintable(fileName), e.what());
-            continue;
-        }
-        if (!h.is_valid()) continue;
-        m_torrents.push_back(h);
-        if (atp.added_time > 0) {
-            const QString rhash = QString::fromStdString(
-                (std::ostringstream() << atp.info_hashes.get_best()).str());
-            if (!rhash.isEmpty()) m_addedTimes[rhash] = static_cast<qint64>(atp.added_time);
-        }
-        if (recoveredFromCorrupt) {
-            h.force_recheck();
-        }
-        // Mark this handle so the first state_update_alert it generates runs
-        // a ".!bt" strip pass for any files already complete on resume. We
-        // can't call file_progress() inline here — the storage isn't bound
-        // yet and libtorrent throws invalid_torrent_handle.
-        m_pendingResumeStripCheck.insert(h);
-    }
-
-    // Re-apply saved per-torrent rate caps. The .resume data carries the
-    // torrent_info synchronously, so the handle has metadata immediately and
-    // info_hashes.get_best() returns the real hash here.
-    for (auto &h : m_torrents) {
-        if (!h.is_valid()) continue;
-        lt::torrent_status st = h.status();
-        if (!st.has_metadata) continue;
-        QString hash = QString::fromStdString(
-            (std::ostringstream() << st.info_hashes.get_best()).str());
-        if (int kbps = m_perTorrentDownLimit.value(hash, 0))
-            h.set_download_limit(kbps * 1024);
-        if (int kbps = m_perTorrentUpLimit.value(hash, 0))
-            h.set_upload_limit(kbps * 1024);
-    }
-
-    qDebug() << "[session] loadResumeData complete:" << m_torrents.size() << "torrents loaded";
-
-    if (!m_torrents.empty())
-        emit torrentsUpdated();
-}
 
 void SessionManager::updateStats()
 {
@@ -2313,39 +1134,46 @@ void SessionManager::updateStats()
             m_statsHistory->recordTransfer(globalDownloaded(), globalUploaded());
         }
     }
-    // The per-piece save only fires while pieces complete, so seeding/stalled
-    // torrents would keep pre-crash state. ponytail: 5 min ceiling on loss.
-    {
-        static int resumeTick = 0;
-        if (++resumeTick >= 300) {
-            resumeTick = 0;
-            saveResumeData();
-        }
-    }
     checkSeedRatios();
     checkSeedingLimits();
     checkAutoComplete();
     checkAndBlockLeechers();
-    // Low disk space warning — check every tick (1s), but only warn once
-    // per 5 minutes to avoid notification spam.
+    // Disk pressure: warn under 1 GB, and *act* under 512 MB by pausing active
+    // downloads (with hysteresis) so we don't fill the disk or corrupt data.
     {
         static qint64 lastDiskWarn = 0;
         const qint64 now = QDateTime::currentSecsSinceEpoch();
-        if (now - lastDiskWarn >= 300) {
-            QSettings s("BATorrent", "BATorrent");
-            QString savePath = s.value("lastSavePath",
-                QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
-            QStorageInfo storage(savePath);
-            if (storage.isValid() && storage.bytesAvailable() < 1024LL * 1024 * 1024) {
-                qWarning() << "[session] LOW DISK SPACE:" << storage.bytesAvailable() / (1024*1024) << "MB remaining on" << savePath;
-                emit torrentError(tr_("warn_low_disk").arg(storage.bytesAvailable() / (1024*1024)));
-                lastDiskWarn = now;
+        QSettings s("BATorrent", "BATorrent");
+        const QString savePath = s.value("lastSavePath",
+            QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
+        QStorageInfo storage(savePath);
+        const qint64 freeB = storage.isValid() ? storage.bytesAvailable() : -1;
+
+        if (freeB >= 0 && freeB < 512LL * 1024 * 1024 && !m_diskAutoPaused) {
+            int paused = 0;
+            for (auto &h : m_torrents) {
+                if (!h.is_valid()) continue;
+                const lt::torrent_status st = cachedStatus(h);
+                const bool active = st.state == lt::torrent_status::downloading
+                                 || st.state == lt::torrent_status::downloading_metadata;
+                if (active && !(st.flags & lt::torrent_flags::paused)) { h.pause(); ++paused; }
             }
+            m_diskAutoPaused = true;   // runtime-only pause (not persisted) — recovers on disk free
+            qWarning() << "[session] CRITICAL DISK:" << freeB / (1024*1024) << "MB — paused" << paused << "downloads";
+            if (paused > 0) emit torrentError(tr_("warn_disk_autopause").arg(paused).arg(freeB / (1024*1024)));
+            lastDiskWarn = now;
+        } else if (freeB >= 2LL * 1024 * 1024 * 1024) {
+            m_diskAutoPaused = false;   // recovered → re-arm (user decides whether to resume)
+        } else if (freeB >= 0 && freeB < 1024LL * 1024 * 1024 && now - lastDiskWarn >= 300) {
+            qWarning() << "[session] LOW DISK SPACE:" << freeB / (1024*1024) << "MB remaining on" << savePath;
+            emit torrentError(tr_("warn_low_disk").arg(freeB / (1024*1024)));
+            lastDiskWarn = now;
         }
     }
     checkInterfaceStatus();
     checkBandwidthSchedule();
     checkMagnetTimeouts();
+    checkMemoryGuard();
     enforceDownloadQueue();
     if (!m_torrents.empty())
         emit torrentsUpdated();
@@ -2367,315 +1195,14 @@ lt::torrent_status SessionManager::cachedStatus(const lt::torrent_handle &h) con
     return {};
 }
 
-void SessionManager::processAlerts()
-{
-    std::vector<lt::alert *> alerts;
-    m_session.pop_alerts(&alerts);
-
-    for (auto *a : alerts) {
-      try {
-        // Status snapshots arrive in one batch per post_torrent_updates(),
-        // refreshing every cache entry at once. This is what makes the UI
-        // 1/Nth as expensive as polling each handle individually.
-        if (auto *su = lt::alert_cast<lt::state_update_alert>(a)) {
-            for (const auto &st : su->status) {
-                m_statusCache[st.handle] = st;
-                // Deferred .!bt strip for files already 100% on resume.
-                // Storage is bound by the time we get here, so file_progress
-                // is safe — gate on metadata + has_storage just in case.
-                auto it = m_pendingResumeStripCheck.find(st.handle);
-                if (it != m_pendingResumeStripCheck.end() && st.has_metadata) {
-                    try {
-                        if (auto ti = st.handle.torrent_file()) {
-                            std::vector<std::int64_t> progress;
-                            st.handle.file_progress(progress,
-                                lt::torrent_handle::piece_granularity);
-                            const auto &fs = ti->files();
-                            const int n = static_cast<int>(progress.size());
-                            for (int i = 0; i < n; ++i) {
-                                lt::file_index_t idx(i);
-                                if (progress[i] != fs.file_size(idx)) continue;
-                                std::string cur = fs.file_path(idx);
-                                if (cur.size() >= 4
-                                    && cur.compare(cur.size() - 4, 4, ".!bt") == 0) {
-                                    st.handle.rename_file(idx,
-                                        std::string(cur, 0, cur.size() - 4));
-                                }
-                            }
-                        }
-                    } catch (const std::exception &) {
-                        // Storage still not ready — retry on next tick.
-                        continue;
-                    }
-                    m_pendingResumeStripCheck.erase(it);
-                }
-            }
-            continue;
-        }
-
-        if (auto *fa = lt::alert_cast<lt::torrent_finished_alert>(a)) {
-            if (!fa->handle.is_valid()) continue;
-            QString name = QString::fromStdString(fa->torrent_name());
-            lt::torrent_status st = fa->handle.status();
-
-            // Safety net: strip any remaining ".!bt" suffixes. Normally
-            // file_completed_alert handles this per-file as the download
-            // progresses, but this catches edge cases — torrents that
-            // resume already-complete from a previous session, alerts
-            // dropped under load, etc.
-            if (auto ti = fa->handle.torrent_file()) {
-                const auto &files = ti->files();
-                for (lt::file_index_t i(0); i < files.end_file(); ++i) {
-                    std::string current = files.file_path(i);
-                    if (current.size() >= 4
-                        && current.compare(current.size() - 4, 4, ".!bt") == 0) {
-                        std::string stripped(current, 0, current.size() - 4);
-                        fa->handle.rename_file(i, stripped);
-                    }
-                }
-            }
-
-            // Skip torrents that were already complete when the session
-            // started — libtorrent fires one finish alert per torrent during
-            // the resume check, even if no bytes were actually downloaded.
-            bool downloadedThisSession = (st.total_payload_download > 0);
-
-            if (downloadedThisSession) {
-                QString hash = QString::fromStdString(
-                    (std::ostringstream() << st.info_hashes.get_best()).str());
-
-                // Temp path → move to intended final path first
-                if (m_torrentIntendedPath.contains(hash)) {
-                    QString dest = m_torrentIntendedPath.take(hash);
-                    fa->handle.move_storage(dest.toStdString());
-                } else if (m_autoMoveEnabled && !m_autoMovePath.isEmpty()) {
-                    fa->handle.move_storage(m_autoMovePath.toStdString());
-                }
-                if (effectiveStopAfterDownload(hash))
-                    fa->handle.pause();
-
-                if (m_autoExtract)
-                    extractArchives(QString::fromStdString(st.save_path), name);
-
-                // Complete torrents now load in seed_mode (see loadResumeData) so
-                // they no longer re-check/re-download and re-fire this alert on
-                // launch. The remaining guard covers a torrent already persisted
-                // complete that still somehow re-finishes — its storage side
-                // effects run, but the user-facing completion (script +
-                // notification + media-server webhook) is muted.
-                const bool resumeRefinish = m_completedAtStartup.contains(hash);
-                if (!resumeRefinish) {
-                    qDebug() << "[session] torrent finished:" << name << "hash:" << hash.left(16);
-                    if (m_statsHistory) m_statsHistory->recordCompleted(m_categories.value(hash));
-                    executeOnComplete(name, QString::fromStdString(st.save_path),
-                                      hash, st.total_wanted);
-                    emit torrentFinished(name, hash);
-                }
-            }
-
-            // Remove from queue-paused set in either case (it's no longer
-            // contributing to the active-download count).
-            m_queuePaused.erase(fa->handle);
-        }
-        if (auto *ea = lt::alert_cast<lt::torrent_error_alert>(a)) {
-            // Per-torrent rate-limit (like qBittorrent's 1s cooldown per
-            // torrent). The previous global 30s window silently swallowed
-            // errors from torrent B if torrent A errored first.
-            static QHash<lt::torrent_handle, qint64> lastErrorAt;
-            const qint64 nowTe = QDateTime::currentSecsSinceEpoch();
-            auto &last = lastErrorAt[ea->handle];
-            if (nowTe - last >= 3) {
-                emit torrentError(QString::fromStdString(ea->message()));
-                last = nowTe;
-            }
-            if (lastErrorAt.size() > 500) lastErrorAt.clear();
-        }
-        // Surface previously-swallowed alert categories so the user actually
-        // hears about disk-full, move-storage failures, port collisions, and
-        // broken magnets instead of staring at silent empty state.
-        if (auto *fe = lt::alert_cast<lt::file_error_alert>(a)) {
-            // Rate-limit file error emissions to avoid notification storms
-            // when disk fills up — libtorrent fires one alert per failed
-            // piece write, which at full speed can be hundreds per second.
-            // One notification per 30 s is enough to inform without locking
-            // the UI or crashing the notification stack.
-            static qint64 lastFileErrorEmit = 0;
-            const qint64 now = QDateTime::currentSecsSinceEpoch();
-            const bool shouldEmit = (now - lastFileErrorEmit) >= 30;
-
-            // Detect disk-full specifically and auto-pause everything.
-            // "No space" (Linux/macOS) / "not enough" (Windows) in the
-            // libtorrent error message.
-            const QString msg = QString::fromStdString(fe->message());
-            const bool diskFull = msg.contains("No space", Qt::CaseInsensitive)
-                               || msg.contains("not enough", Qt::CaseInsensitive)
-                               || msg.contains("disk full", Qt::CaseInsensitive);
-            if (diskFull) {
-                // Pause ALL downloading torrents — continuing just wastes
-                // CPU re-trying writes that will fail.
-                for (auto &h : m_torrents) {
-                    if (!h.is_valid()) continue;
-                    auto st = cachedStatus(h);
-                    if (st.state == lt::torrent_status::downloading
-                        && !(st.flags & lt::torrent_flags::paused)) {
-                        h.pause();
-                    }
-                }
-                if (shouldEmit) {
-                    emit torrentError(tr_("error_disk_full"));
-                    lastFileErrorEmit = now;
-                }
-            } else {
-                if (shouldEmit) {
-                    emit torrentError(msg);
-                    lastFileErrorEmit = now;
-                }
-                // Pause finished torrents that hit file errors (external
-                // drive unplugged, files deleted, etc.)
-                if (fe->handle.is_valid()) {
-                    lt::torrent_status st = fe->handle.status();
-                    const bool wasFinished = st.is_finished
-                        || st.state == lt::torrent_status::finished
-                        || st.state == lt::torrent_status::seeding;
-                    if (wasFinished
-                        && !(st.flags & lt::torrent_flags::paused)) {
-                        fe->handle.pause();
-                    }
-                }
-            }
-        }
-        if (auto *sm = lt::alert_cast<lt::storage_moved_failed_alert>(a)) {
-            emit torrentError(QString::fromStdString(sm->message()));
-            // Partial moves leave libtorrent's piece map out of sync with
-            // disk; a recheck is the only safe recovery.
-            if (sm->handle.is_valid())
-                sm->handle.force_recheck();
-        }
-        // After a top-level rename, libtorrent re-roots each file into the new
-        // folder (one alert per file) but leaves the old folder behind. Once the
-        // last file has moved the old tree is empty, so prune it then.
-        if (auto *fr = lt::alert_cast<lt::file_renamed_alert>(a)) {
-            auto it = m_renameOldRoots.find(fr->handle);
-            if (it != m_renameOldRoots.end() && pruneEmptyDir(it->second))
-                m_renameOldRoots.erase(it);
-        }
-        if (auto *lf = lt::alert_cast<lt::listen_failed_alert>(a)) {
-            emit torrentError(QString::fromStdString(lf->message()));
-            m_listenOk = false;
-            updatePortStatus();
-        }
-        if (lt::alert_cast<lt::listen_succeeded_alert>(a)) {
-            m_listenOk = true;
-            updatePortStatus();
-        }
-        if (lt::alert_cast<lt::portmap_alert>(a)) {
-            m_portmapOk = true;
-            updatePortStatus();
-        }
-        if (lt::alert_cast<lt::portmap_error_alert>(a)) {
-            m_portmapOk = false;
-            updatePortStatus();
-        }
-        if (auto *mf = lt::alert_cast<lt::metadata_failed_alert>(a)) {
-            emit torrentError(QString::fromStdString(mf->message()));
-        }
-        // Async resume-data persistence: write the buffer the moment the
-        // alert arrives, decrement the outstanding counter so
-        // flushResumeDataBlocking() and other callers can tell when every
-        // request has been serviced.
-        if (auto *rd = lt::alert_cast<lt::save_resume_data_alert>(a)) {
-            persistResumeAlert(rd);
-            if (m_resumeOutstanding > 0) --m_resumeOutstanding;
-        }
-        if (lt::alert_cast<lt::save_resume_data_failed_alert>(a)) {
-            if (m_resumeOutstanding > 0) --m_resumeOutstanding;
-        }
-        // Piece just verified — opportunistically save resume data for this
-        // torrent so a crash before the next 5-min tick doesn't force a
-        // full re-hash on the next launch. Rate-limited per handle (60 s)
-        // so a fast torrent doesn't hammer the disk; with the limit, the
-        // worst case is ~1 resume write per minute per active download.
-        if (auto *pf = lt::alert_cast<lt::piece_finished_alert>(a)) {
-            if (!pf->handle.is_valid()) continue;
-            const qint64 now = QDateTime::currentSecsSinceEpoch();
-            auto it = m_lastResumeSaveAt.find(pf->handle);
-            if (it == m_lastResumeSaveAt.end() || now - it->second >= 60) {
-                pf->handle.save_resume_data(lt::torrent_handle::save_info_dict);
-                m_lastResumeSaveAt[pf->handle] = now;
-                ++m_resumeOutstanding;
-            }
-        }
-        // Alert queue overflow — critical: alerts were silently dropped.
-        // Means our alert_queue_size was too small or processing too slow.
-        if (auto *ad = lt::alert_cast<lt::alerts_dropped_alert>(a)) {
-            qWarning() << "[session] CRITICAL: alerts were dropped! Bitmask:"
-                       << QString::number(ad->dropped_alerts.to_ulong(), 16);
-        }
-        // Resume data was rejected (corrupt, version mismatch, missing
-        // files). qBittorrent logs this and sets a missing-files flag;
-        // without handling it we get undefined behavior at startup.
-        if (auto *fr = lt::alert_cast<lt::fastresume_rejected_alert>(a)) {
-            qWarning() << "[session] fastresume rejected:"
-                       << QString::fromStdString(fr->message());
-            if (fr->handle.is_valid())
-                fr->handle.force_recheck();
-        }
-        // Recheck completed — the torrent is back in a consistent state.
-        // Re-populate the status cache so queue/auto-pause logic sees the
-        // real state instead of the stale pre-recheck snapshot.
-        if (auto *tc = lt::alert_cast<lt::torrent_checked_alert>(a)) {
-            if (tc->handle.is_valid()) {
-                m_statusCache[tc->handle] = tc->handle.status();
-                qDebug() << "[session] recheck completed for torrent";
-            }
-        }
-        // Magnet just got its metadata — file list is now known, so apply
-        // the .!bt suffix to each file.
-        if (auto *mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            if (!mr->handle.is_valid()) continue;
-            auto ti = mr->handle.torrent_file();
-            if (ti) {
-                const auto &files = ti->files();
-                for (lt::file_index_t i(0); i < files.end_file(); ++i) {
-                    std::string original = files.file_path(i);
-                    if (original.size() >= 4
-                        && original.compare(original.size() - 4, 4, ".!bt") == 0)
-                        continue;
-                    mr->handle.rename_file(i, original + ".!bt");
-                }
-            }
-            stageResumeSave(mr->handle);   // persist the magnet now it has metadata
-        }
-        // File done — drop the .!bt suffix so the file appears with its
-        // final name in the file manager and media server scans. The
-        // path libtorrent returns here is the *current* renamed path
-        // (still suffixed), so we have to strip the ".!bt" ourselves
-        // before renaming; otherwise the call is a no-op.
-        if (auto *fc = lt::alert_cast<lt::file_completed_alert>(a)) {
-            if (!fc->handle.is_valid()) continue;
-            auto ti = fc->handle.torrent_file();
-            if (ti) {
-                std::string current = ti->files().file_path(fc->index);
-                if (current.size() >= 4
-                    && current.compare(current.size() - 4, 4, ".!bt") == 0) {
-                    std::string stripped(current, 0, current.size() - 4);
-                    fc->handle.rename_file(fc->index, stripped);
-                }
-            }
-        }
-      } catch (const std::exception &e) {
-        qWarning() << "[session] alert processing exception:" << e.what();
-      } catch (...) {
-        qWarning() << "[session] alert processing: unknown exception caught";
-      }
-    }
-}
+// processAlerts() + every on*() alert handler live in sessionmanager_alerts.cpp.
 
 void SessionManager::checkSeedRatios()
 {
     if (m_seedRatioLimit <= 0.0f) return;
 
-    for (auto &h : m_torrents) {
+    for (int i = 0; i < static_cast<int>(m_torrents.size()); ++i) {
+        auto &h = m_torrents[i];
         lt::torrent_status st = cachedStatus(h);
         if (st.state != lt::torrent_status::seeding) continue;
         if (st.flags & lt::torrent_flags::paused) continue;
@@ -2687,14 +1214,17 @@ void SessionManager::checkSeedRatios()
               / static_cast<float>(st.total_payload_download)
             : 0.0f;
 
+        // reaching the limit is the natural end of the torrent's life —
+        // mark it completed (freeze + persist), not merely paused
         if (ratio >= m_seedRatioLimit)
-            h.pause();
+            markCompleted(i);
     }
 }
 
 void SessionManager::checkSeedingLimits()
 {
-    for (auto &h : m_torrents) {
+    for (int i = 0; i < static_cast<int>(m_torrents.size()); ++i) {
+        auto &h = m_torrents[i];
         if (!h.is_valid()) continue;
         lt::torrent_status st = cachedStatus(h);
         if (st.state != lt::torrent_status::seeding) continue;
@@ -2710,47 +1240,10 @@ void SessionManager::checkSeedingLimits()
         qint64 seeded = std::chrono::duration_cast<std::chrono::seconds>(
                             st.seeding_duration).count();
         if (seeded >= maxSec)
-            h.pause();
+            markCompleted(i);
     }
 }
 
-QString SessionManager::resumeDataDir() const
-{
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("resume");
-}
-
-void SessionManager::migrateLegacyResumeData()
-{
-    // v3.0 added setOrganizationName("BATorrent"), which shifted AppDataLocation
-    // from <APPDATA>/BATorrent to <APPDATA>/BATorrent/BATorrent. Pre-3.0 users'
-    // .resume/.torrent files live in the old dir; copy them over once so their
-    // torrents don't vanish after upgrading. Non-destructive: copies (never
-    // deletes) the originals.
-    QSettings s;
-    if (s.value(QStringLiteral("resumeMigrated"), false).toBool())
-        return;   // run exactly once — else removing all torrents would resurrect
-    s.setValue(QStringLiteral("resumeMigrated"), true);
-
-    QDir newDir(resumeDataDir());
-    if (!newDir.entryList({"*.resume"}, QDir::Files).isEmpty())
-        return;   // already populated — nothing to migrate
-
-    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir up(appData);
-    if (!up.cdUp()) return;
-    const QString legacyResume = up.filePath("resume");   // <APPDATA>/BATorrent/resume
-    if (QDir::cleanPath(legacyResume) == QDir::cleanPath(newDir.absolutePath())) return;
-
-    QDir legacyDir(legacyResume);
-    const QStringList files = legacyDir.entryList({"*.resume", "*.torrent"}, QDir::Files);
-    if (files.isEmpty()) return;
-
-    newDir.mkpath(".");
-    int n = 0;
-    for (const QString &f : files)
-        if (QFile::copy(legacyDir.filePath(f), newDir.filePath(f))) ++n;
-    qDebug() << "[session] migrated" << n << "resume files from legacy dir" << legacyResume;
-}
 
 int SessionManager::importFromQBittorrent(const QString &defaultSavePath)
 {
@@ -2848,83 +1341,6 @@ QString SessionManager::stateToString(lt::torrent_status::state_t state)
     }
 }
 
-// --- VPN / Interface binding ---
-
-void SessionManager::setOutgoingInterface(const QString &interfaceName)
-{
-    qDebug() << "[session] setOutgoingInterface:" << interfaceName;
-    m_outgoingInterface = interfaceName;
-    QSettings("BATorrent", "BATorrent").setValue("outgoingInterface", interfaceName);
-    m_killSwitchActive = false;
-    // Resume torrents that the killswitch paused — otherwise switching VPNs
-    // or going back to "any interface" leaves them paused forever.
-    for (auto &h : m_killSwitchPaused) {
-        if (h.is_valid()) h.resume();
-    }
-    m_killSwitchPaused.clear();
-
-    lt::settings_pack pack;
-
-    if (interfaceName.isEmpty()) {
-        // Any interface
-        pack.set_str(lt::settings_pack::outgoing_interfaces, "");
-        int port = listenPort();
-        QString listenIface = QString("0.0.0.0:%1").arg(port > 0 ? port : 6881);
-        pack.set_str(lt::settings_pack::listen_interfaces, listenIface.toStdString());
-    } else {
-        pack.set_str(lt::settings_pack::outgoing_interfaces, interfaceName.toStdString());
-
-        // Resolve the interface IP for listen_interfaces
-        QNetworkInterface ni = QNetworkInterface::interfaceFromName(interfaceName);
-        QString listenAddr = "0.0.0.0";
-        for (const auto &entry : ni.addressEntries()) {
-            if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol) {
-                listenAddr = entry.ip().toString();
-                break;
-            }
-        }
-        int port = listenPort();
-        QString listenIface = QString("%1:%2").arg(listenAddr).arg(port > 0 ? port : 6881);
-        pack.set_str(lt::settings_pack::listen_interfaces, listenIface.toStdString());
-    }
-
-    m_session.apply_settings(pack);
-}
-
-QString SessionManager::outgoingInterface() const
-{
-    return m_outgoingInterface;
-}
-
-void SessionManager::setKillSwitchEnabled(bool enabled)
-{
-    m_killSwitchEnabled = enabled;
-    QSettings("BATorrent", "BATorrent").setValue("killSwitchEnabled", enabled);
-    if (!enabled) {
-        m_killSwitchActive = false;
-        for (auto &h : m_killSwitchPaused) {
-            if (h.is_valid()) h.resume();
-        }
-        m_killSwitchPaused.clear();
-    }
-}
-
-bool SessionManager::killSwitchEnabled() const
-{
-    return m_killSwitchEnabled;
-}
-
-void SessionManager::setAutoResumeOnReconnect(bool enabled)
-{
-    m_autoResume = enabled;
-    QSettings("BATorrent", "BATorrent").setValue("autoResumeOnReconnect", enabled);
-}
-
-bool SessionManager::autoResumeOnReconnect() const
-{
-    return m_autoResume;
-}
-
 qint64 SessionManager::globalDownloaded() const
 {
     qint64 sessionDown = 0;
@@ -2957,6 +1373,53 @@ float SessionManager::globalRatio() const
     return down > 0 ? static_cast<float>(up) / static_cast<float>(down) : 0.0f;
 }
 
+QVariantMap SessionManager::statsWrapped(int year) const
+{
+    QVariantMap out;
+    out["year"] = year;
+    if (!m_statsHistory) return out;
+    const QJsonObject days = m_statsHistory->days();
+    const QString prefix = QString::number(year) + QLatin1Char('-');
+    qint64 down = 0, up = 0, added = 0, completed = 0, busiestDown = 0;
+    int activeDays = 0;
+    QString busiestDay;
+    QMap<QString, int> cats;
+    QVector<qint64> months(12, 0);
+    for (auto it = days.begin(); it != days.end(); ++it) {
+        if (!it.key().startsWith(prefix)) continue;
+        const QJsonObject e = it.value().toObject();
+        const qint64 d = qint64(e.value(QStringLiteral("down")).toDouble());
+        const qint64 u = qint64(e.value(QStringLiteral("up")).toDouble());
+        down += d; up += u;
+        added += qint64(e.value(QStringLiteral("added")).toDouble());
+        completed += qint64(e.value(QStringLiteral("completed")).toDouble());
+        if (d > 0 || u > 0 || e.value(QStringLiteral("added")).toDouble() > 0) ++activeDays;
+        if (d > busiestDown) { busiestDown = d; busiestDay = it.key(); }
+        const int month = it.key().mid(5, 2).toInt();
+        if (month >= 1 && month <= 12) months[month - 1] += d;
+        const QJsonObject c = e.value(QStringLiteral("cats")).toObject();
+        for (auto ci = c.begin(); ci != c.end(); ++ci) cats[ci.key()] += ci.value().toInt();
+    }
+    out["down"] = down; out["up"] = up;
+    out["added"] = added; out["completed"] = completed;
+    out["activeDays"] = activeDays;
+    out["busiestDay"] = busiestDay; out["busiestDown"] = busiestDown;
+
+    QList<QPair<QString, int>> sorted;
+    for (auto ci = cats.begin(); ci != cats.end(); ++ci) sorted.append({ ci.key(), ci.value() });
+    std::sort(sorted.begin(), sorted.end(), [](const QPair<QString,int> &a, const QPair<QString,int> &b) {
+        return a.second > b.second;
+    });
+    QVariantList catList;
+    for (const auto &p : sorted) { QVariantMap cm; cm["name"] = p.first; cm["count"] = p.second; catList << cm; }
+    out["categories"] = catList;
+
+    QVariantList monthList;
+    for (int i = 0; i < 12; ++i) monthList << QVariant(qlonglong(months[i]));
+    out["months"] = monthList;
+    return out;
+}
+
 qint64 SessionManager::sessionDownloaded() const
 {
     qint64 sessionDown = 0;
@@ -2977,7 +1440,7 @@ qint64 SessionManager::sessionUploaded() const
     return sessionUp;
 }
 
-SessionManager::DetailedStats SessionManager::detailedStats() const
+DetailedStats SessionManager::detailedStats() const
 {
     DetailedStats ds;
     for (const auto &h : m_torrents) {
@@ -3004,120 +1467,9 @@ int SessionManager::totalTorrentsAdded() const
     return settings.value("totalTorrentsAdded", 0).toInt();
 }
 
-// --- Proxy ---
-
-void SessionManager::setProxySettings(int type, const QString &host, int port,
-                                       const QString &user, const QString &pass)
-{
-    m_proxyType = type;
-    m_proxyHost = host;
-    m_proxyPort = port;
-    m_proxyUser = user;
-    m_proxyPass = pass;
-
-    QSettings st("BATorrent", "BATorrent");
-    st.setValue("proxyType", type);
-    st.setValue("proxyHost", host);
-    st.setValue("proxyPort", port);
-    st.setValue("proxyUser", user);
-    st.setValue("proxyPass", pass);
-
-    lt::settings_pack pack;
-    if (type == 0) {
-        pack.set_int(lt::settings_pack::proxy_type, lt::settings_pack::none);
-        pack.set_bool(lt::settings_pack::proxy_peer_connections, false);
-        pack.set_bool(lt::settings_pack::proxy_hostnames, false);
-    } else {
-        int ltType = (type == 1) ? lt::settings_pack::socks5_pw : lt::settings_pack::http_pw;
-        if (user.isEmpty())
-            ltType = (type == 1) ? lt::settings_pack::socks5 : lt::settings_pack::http;
-        pack.set_int(lt::settings_pack::proxy_type, ltType);
-        pack.set_str(lt::settings_pack::proxy_hostname, host.toStdString());
-        pack.set_int(lt::settings_pack::proxy_port, port);
-        if (!user.isEmpty()) {
-            pack.set_str(lt::settings_pack::proxy_username, user.toStdString());
-            pack.set_str(lt::settings_pack::proxy_password, pass.toStdString());
-        }
-        // Route peer traffic through the proxy too — without this the
-        // proxy only covers trackers and the user's real IP leaks to peers.
-        // Resolve hostnames through the proxy as well so DNS doesn't leak.
-        pack.set_bool(lt::settings_pack::proxy_peer_connections, true);
-        pack.set_bool(lt::settings_pack::proxy_hostnames, true);
-    }
-    m_session.apply_settings(pack);
-}
-
-int SessionManager::proxyType() const { return m_proxyType; }
-QString SessionManager::proxyHost() const { return m_proxyHost; }
-int SessionManager::proxyPort() const { return m_proxyPort; }
-QString SessionManager::proxyUser() const { return m_proxyUser; }
-QString SessionManager::proxyPass() const { return m_proxyPass; }
-
-// --- IP Filter ---
-
-void SessionManager::loadIpFilter(const QString &filePath)
-{
-    m_ipFilterPath = filePath;
-    m_ipFilterCount = 0;
-
-    if (filePath.isEmpty()) {
-        clearIpFilter();
-        return;
-    }
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
-
-    lt::ip_filter filter;
-    QTextStream in(&file);
-    int count = 0;
-
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith('#'))
-            continue;
-
-        // P2P format: "description:startIP-endIP"
-        int colonIdx = line.lastIndexOf(':');
-        QString range;
-        if (colonIdx >= 0 && line.indexOf('.', colonIdx) > 0)
-            range = line.mid(colonIdx + 1).trimmed();
-        else
-            range = line;
-
-        int dashIdx = range.indexOf('-');
-        if (dashIdx < 0) continue;
-
-        QString startIp = range.left(dashIdx).trimmed();
-        QString endIp = range.mid(dashIdx + 1).trimmed();
-
-        try {
-            boost::system::error_code ec1, ec2;
-            auto addr1 = boost::asio::ip::make_address(startIp.toStdString(), ec1);
-            auto addr2 = boost::asio::ip::make_address(endIp.toStdString(), ec2);
-            if (ec1 || ec2) continue;
-            filter.add_rule(addr1, addr2, lt::ip_filter::blocked);
-            ++count;
-        } catch (...) { /* skip an unparseable blocklist range */ }
-    }
-
-    m_session.set_ip_filter(filter);
-    m_ipFilterCount = count;
-}
-
-void SessionManager::clearIpFilter()
-{
-    m_ipFilterPath.clear();
-    m_ipFilterCount = 0;
-    m_session.set_ip_filter(lt::ip_filter());
-}
-
-QString SessionManager::ipFilterPath() const { return m_ipFilterPath; }
-int SessionManager::ipFilterCount() const { return m_ipFilterCount; }
-
 // --- Bandwidth Scheduler ---
 
-SessionManager::AdvancedSettings SessionManager::advancedSettings() const
+AdvancedSettings SessionManager::advancedSettings() const
 {
     QSettings s("BATorrent", "BATorrent");
     AdvancedSettings a;
@@ -3207,6 +1559,90 @@ void SessionManager::setRunOnComplete(const QString &command)
 
 QString SessionManager::runOnComplete() const { return m_runOnComplete; }
 
+// Centralised key→setter routing for every session-affecting setting, shared by
+// the in-process path and the IPC engine (over the applySetting RPC) so settings
+// apply live in split mode too. Returns false for keys that aren't ours (UI-only
+// prefs the caller persists to QSettings). Mirrors QmlSettingsBridge::set().
+bool SessionManager::applySetting(const QString &key, const QVariant &v)
+{
+    if (key.startsWith(QLatin1String("adv"))) {
+        AdvancedSettings a = advancedSettings();
+        bool hit = true;
+        if (key == "advAioThreads")          a.aioThreads = v.toInt();
+        else if (key == "advHashingThreads") a.hashingThreads = v.toInt();
+        else if (key == "advFilePool")       a.filePoolSize = v.toInt();
+        else if (key == "advCheckingMem")    a.checkingMemUsage = v.toInt();
+        else if (key == "advSendBuffer")     a.sendBufferWatermark = v.toInt();
+        else if (key == "advConnLimit")      a.connectionsLimit = v.toInt();
+        else if (key == "advConnSpeed")      a.connectionSpeed = v.toInt();
+        else if (key == "advUnchokeSlots")   a.unchokeSlotsLimit = v.toInt();
+        else if (key == "advMaxUploadsTor")  a.maxUploadsPerTorrent = v.toInt();
+        else if (key == "advMaxConnsTor")    a.maxConnectionsPerTorrent = v.toInt();
+        else if (key == "advChokingAlgo")    a.chokingAlgorithm = v.toInt() == 1 ? 2 : 0;
+        else if (key == "advSeedChoking")    a.seedChokingAlgorithm = v.toInt();
+        else if (key == "advRateOverhead")   a.rateLimitIpOverhead = v.toBool();
+        else if (key == "advIgnoreLan")      a.ignoreLimitsOnLAN = v.toBool();
+        else hit = false;
+        if (hit) setAdvancedSettings(a);
+        return hit;
+    }
+    if (key == "downloadLimit")            setDownloadLimit(v.toInt());
+    else if (key == "uploadLimit")         setUploadLimit(v.toInt());
+    else if (key == "maxActiveDownloads")  setMaxActiveDownloads(v.toInt());
+    else if (key == "seedRatioLimit")      setSeedRatioLimit(v.toFloat());
+    else if (key == "stopAfterDownload")   setStopAfterDownload(v.toBool());
+    else if (key == "maxSeedDays")         setMaxSeedSeconds(qint64(v.toInt()) * 86400);
+    else if (key == "schedulerEnabled")    setSchedulerEnabled(v.toBool());
+    else if (key == "altDownloadLimit")    setAltSpeedLimits(v.toInt(), altUploadLimit());
+    else if (key == "altUploadLimit")      setAltSpeedLimits(altDownloadLimit(), v.toInt());
+    else if (key == "scheduleFromHour")    setScheduleFromHour(v.toInt());
+    else if (key == "scheduleToHour")      setScheduleToHour(v.toInt());
+    else if (key == "scheduleDays")        setScheduleDays(v.toInt());
+    else if (key == "listenPort")          setListenPort(v.toInt());
+    else if (key == "maxConnections")      setMaxConnections(v.toInt());
+    else if (key == "dhtEnabled")          setDhtEnabled(v.toBool());
+    else if (key == "utpEnabled")          setUtpEnabled(v.toBool());
+    else if (key == "encryptionMode")      setEncryptionMode(v.toInt());
+    else if (key == "anonymousMode")       setAnonymousMode(v.toBool());
+    else if (key == "forceIpv4")           setForceIpv4(v.toBool());
+    else if (key == "ptMode")              setPtMode(v.toBool());
+    else if (key == "blockLeechers")       setBlockLeecherClients(v.toBool());
+    else if (key == "outgoingInterface")   setOutgoingInterface(v.toString());
+    else if (key == "killSwitchEnabled")   setKillSwitchEnabled(v.toBool());
+    else if (key == "autoResumeOnReconnect") setAutoResumeOnReconnect(v.toBool());
+    else if (key == "proxyType")           setProxySettings(v.toInt(), proxyHost(), proxyPort(), proxyUser(), proxyPass());
+    else if (key == "proxyHost")           setProxySettings(proxyType(), v.toString(), proxyPort(), proxyUser(), proxyPass());
+    else if (key == "proxyPort")           setProxySettings(proxyType(), proxyHost(), v.toInt(), proxyUser(), proxyPass());
+    else if (key == "proxyUser")           setProxySettings(proxyType(), proxyHost(), proxyPort(), v.toString(), proxyPass());
+    else if (key == "proxyPass")           setProxySettings(proxyType(), proxyHost(), proxyPort(), proxyUser(), v.toString());
+    else if (key == "proxyLeakProof")      setProxyLeakProof(v.toBool());
+    else if (key == "ipFilterPath")        { QString p = v.toString(); if (p.isEmpty()) clearIpFilter(); else loadIpFilter(p); }
+    else if (key == "tempPath")            setTempPath(v.toString());
+    else if (key == "preallocate")         setPreallocate(v.toBool());
+    else if (key == "autoRecheck")         setAutoRecheck(v.toBool());
+    else if (key == "contentLayout")       setContentLayout(v.toInt());
+    else if (key == "torrentExportDir")    setTorrentExportDir(v.toString());
+    else if (key == "extractPasswords") {
+        QStringList pw;
+        const auto parts = v.toString().split(QRegularExpression(QStringLiteral("[;\\n]")), Qt::SkipEmptyParts);
+        for (const QString &p : parts) { QString t = p.trimmed(); if (!t.isEmpty()) pw << t; }
+        setExtractPasswords(pw);
+    }
+    else if (key == "autoExtract")         setAutoExtract(v.toBool());
+    else if (key == "autoExtractDelete")   setAutoExtractDelete(v.toBool());
+    else if (key == "runOnComplete")       setRunOnComplete(v.toString());
+    else if (key == "watchedFolder")       setWatchedFolder(v.toString());
+    else if (key == "autoMoveEnabled")     setAutoMove(v.toBool(), autoMovePath());
+    else if (key == "autoMovePath")        setAutoMove(autoMoveEnabled(), v.toString());
+    else if (key == "autoComplete") {
+        const qint64 days[] = {0, 1, 3, 7, 14, 30};
+        int i = v.toInt();
+        setAutoCompleteSeconds((i >= 0 && i < 6 ? days[i] : 0) * 86400);
+    }
+    else return false;
+    return true;
+}
+
 void SessionManager::executeOnComplete(const QString &name, const QString &savePath,
                                        const QString &hash, qint64 totalSize)
 {
@@ -3245,44 +1681,6 @@ void SessionManager::setWatchedFolder(const QString &path)
 
 QString SessionManager::watchedFolder() const { return m_watchedFolder; }
 
-void SessionManager::setDeleteTorrentOnAdd(bool enabled)
-{
-    m_deleteTorrentOnAdd = enabled;
-    QSettings("BATorrent", "BATorrent").setValue("deleteTorrentOnAdd", enabled);
-}
-
-bool SessionManager::deleteTorrentOnAdd() const { return m_deleteTorrentOnAdd; }
-
-void SessionManager::setTorrentMoveDir(const QString &path)
-{
-    m_torrentMoveDir = path;
-    QSettings("BATorrent", "BATorrent").setValue("torrentMoveDir", path);
-}
-
-QString SessionManager::torrentMoveDir() const { return m_torrentMoveDir; }
-
-void SessionManager::disposeOfSourceTorrent(const QString &filePath)
-{
-    if (filePath.isEmpty() || !QFileInfo::exists(filePath)) return;
-
-    // A configured move folder wins (it's an explicit "keep them here" choice,
-    // so we never silently delete a file the user asked to organise).
-    if (!m_torrentMoveDir.isEmpty()) {
-        QDir dir(m_torrentMoveDir);
-        if (dir.exists() || dir.mkpath(".")) {
-            const QString dest = dir.filePath(QFileInfo(filePath).fileName());
-            QFile::remove(dest);                      // overwrite a stale same-named file
-            if (QFile::rename(filePath, dest)) return;
-        }
-        // move failed (bad path / cross-device) — fall through to delete-if-enabled
-    }
-
-    if (m_deleteTorrentOnAdd) {
-        // Recycle Bin first (recoverable); permanent delete if the volume has no trash.
-        if (!QFile::moveToTrash(filePath)) QFile::remove(filePath);
-    }
-}
-
 void SessionManager::scanWatchedFolder()
 {
     if (m_watchedFolder.isEmpty()) return;
@@ -3297,11 +1695,15 @@ void SessionManager::scanWatchedFolder()
         QString savePath = s.value("lastSavePath",
             QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
         addTorrent(path, savePath);
-        // addTorrent moves/deletes the source per the user's settings (Move
-        // added .torrent files / Delete after adding). For a duplicate it skips
-        // that, so dispose here too; with neither option set the file just stays
-        // (re-scanned each tick, but skipped as a duplicate while it's loaded).
-        disposeOfSourceTorrent(path);
+        // Move the .torrent to a "processed" subfolder to avoid re-adding.
+        // rename() fails silently if a same-named file was archived before —
+        // the leftover then re-adds the torrent on every scan (reported as
+        // removed torrents "coming back"). Clear the slot first.
+        QDir processed(dir.filePath(".processed"));
+        if (!processed.exists()) processed.mkpath(".");
+        QFile::remove(processed.filePath(f));
+        if (!QFile::rename(path, processed.filePath(f)))
+            qWarning() << "[session] watched folder: couldn't archive" << f;
     }
 }
 
@@ -3420,20 +1822,11 @@ void SessionManager::checkBandwidthSchedule()
     if (!m_schedulerEnabled || (m_altDownLimit == 0 && m_altUpLimit == 0))
         return;
 
-    QDateTime now = QDateTime::currentDateTime();
-    int currentHour = now.time().hour();
-    int dayOfWeek = now.date().dayOfWeek() - 1; // Qt: Mon=1, we want Mon=0
-    bool dayMatches = (m_scheduleDays & (1 << dayOfWeek)) != 0;
-
-    bool inSchedule = false;
-    if (dayMatches) {
-        if (m_scheduleFromHour <= m_scheduleToHour) {
-            inSchedule = (currentHour >= m_scheduleFromHour && currentHour < m_scheduleToHour);
-        } else {
-            // Wraps midnight: e.g. 22:00 to 06:00
-            inSchedule = (currentHour >= m_scheduleFromHour || currentHour < m_scheduleToHour);
-        }
-    }
+    const QDateTime now = QDateTime::currentDateTime();
+    const int currentHour = now.time().hour();
+    const int dayOfWeek = now.date().dayOfWeek() - 1; // Qt: Mon=1, we want Mon=0
+    const bool inSchedule = bat::inBandwidthSchedule(
+        dayOfWeek, currentHour, m_scheduleDays, m_scheduleFromHour, m_scheduleToHour);
 
     // Push values straight to libtorrent — must not go through
     // setDownloadLimit/setUploadLimit because those are "the user wants X as
@@ -3451,60 +1844,6 @@ void SessionManager::checkBandwidthSchedule()
     } else if (!inSchedule && m_altSpeedsActive) {
         m_altSpeedsActive = false;
         applyLimits(m_normalDownLimit, m_normalUpLimit);
-    }
-}
-
-void SessionManager::checkInterfaceStatus()
-{
-    if (m_outgoingInterface.isEmpty() || !m_killSwitchEnabled)
-        return;
-
-    QNetworkInterface ni = QNetworkInterface::interfaceFromName(m_outgoingInterface);
-    bool isUp = ni.isValid()
-                && (ni.flags() & QNetworkInterface::IsUp)
-                && (ni.flags() & QNetworkInterface::IsRunning);
-
-    // Check if interface has an IPv4 address
-    bool hasIp = false;
-    if (isUp) {
-        for (const auto &entry : ni.addressEntries()) {
-            if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol) {
-                hasIp = true;
-                break;
-            }
-        }
-    }
-
-    bool interfaceOk = isUp && hasIp;
-
-    if (!interfaceOk && !m_killSwitchActive) {
-        // Interface just went down — pause all running torrents
-        qDebug() << "[session] KILL SWITCH TRIGGERED — interface" << m_outgoingInterface << "is down";
-        m_killSwitchActive = true;
-        m_killSwitchPaused.clear();
-        for (auto &h : m_torrents) {
-            if (!h.is_valid()) continue;
-            lt::torrent_status st = h.status();
-            if (!(st.flags & lt::torrent_flags::paused)) {
-                h.pause();
-                m_killSwitchPaused.insert(h);
-            }
-        }
-        emit killSwitchTriggered();
-    } else if (interfaceOk && m_killSwitchActive) {
-        // Interface came back — re-apply binding and optionally resume
-        m_killSwitchActive = false;
-        setOutgoingInterface(m_outgoingInterface);
-
-        if (m_autoResume) {
-            for (auto &h : m_killSwitchPaused) {
-                if (h.is_valid())
-                    h.resume();
-            }
-        }
-        m_killSwitchPaused.clear();
-        qDebug() << "[session] VPN interface restored:" << m_outgoingInterface;
-        emit interfaceRestored();
     }
 }
 
@@ -3548,171 +1887,52 @@ void SessionManager::setExtractPasswords(const QStringList &passwords)
 
 QStringList SessionManager::extractPasswords() const { return m_extractPasswords; }
 
-void SessionManager::extractArchives(const QString &savePath, const QString &torrentName)
+void SessionManager::extractArchives(const QString &savePath, const QString &torrentName,
+                                     const QString &priorityPassword, const QString &infoHash)
 {
-    QDir dir(savePath);
+    m_extractor->setPasswords(m_extractPasswords);
+    m_extractor->setDeleteAfter(m_autoExtractDelete);
+    m_extractor->extract(savePath, torrentName, priorityPassword, infoHash);
+}
 
-    // Scope strictly to THIS torrent's own content. Scanning the shared save root
-    // used to pick up every sibling torrent's archives and extract them all at
-    // once — a flood of extractor processes that could freeze the machine.
-    QStringList archives;
-    const QString content = dir.filePath(torrentName);
-    const QFileInfo contentInfo(content);
-    auto keepArchive = [](const QFileInfo &fi) {
-        // multi-part: keep only the first part; the extractor pulls in the rest
-        return !(fi.fileName().contains(QStringLiteral(".part"))
-                 && !fi.fileName().endsWith(QStringLiteral(".part1.rar"))
-                 && !fi.fileName().endsWith(QStringLiteral(".part01.rar")));
-    };
-    if (contentInfo.isDir()) {                          // multi-file torrent → its own folder
-        for (const auto &fi : QDir(content).entryInfoList(
-                 {"*.rar", "*.zip", "*.7z", "*.tar.gz", "*.tar.bz2"}, QDir::Files))
-            if (keepArchive(fi)) archives << fi.absoluteFilePath();
-    } else if (contentInfo.isFile()) {                  // single-file torrent that is an archive
-        const QString n = contentInfo.fileName().toLower();
-        if ((n.endsWith(QStringLiteral(".rar")) || n.endsWith(QStringLiteral(".zip"))
-             || n.endsWith(QStringLiteral(".7z")) || n.endsWith(QStringLiteral(".tar.gz"))
-             || n.endsWith(QStringLiteral(".tar.bz2"))) && keepArchive(contentInfo))
-            archives << content;
+bool SessionManager::torrentHasArchives(int index) const
+{
+    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return false;
+    if (!m_torrents[index].is_valid()) return false;   // torrent_file() throws on an invalid handle
+    auto ti = m_torrents[index].torrent_file();
+    if (!ti) return false;
+    const auto &fs = ti->files();
+    QStringList names;
+    for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
+        QString p = QString::fromStdString(fs.file_path(i));
+        if (p.endsWith(QLatin1String(".!bt"))) p.chop(4);
+        names << p;
     }
+    return !ArchiveScan::archivesToExtract(names).isEmpty();
+}
 
-    if (archives.isEmpty()) return;
+bool SessionManager::torrentHasVideo(int index) const
+{
+    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return false;
+    if (!m_torrents[index].is_valid()) return false;   // torrent_file() throws on an invalid handle
+    auto ti = m_torrents[index].torrent_file();
+    if (!ti) return false;
+    static const QStringList videoExts = {".mp4",".mkv",".avi",".mov",".wmv",".flv",".webm",".m4v",".ts",".mpg",".mpeg",".m2ts"};
+    const auto &fs = ti->files();
+    for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
+        QString p = QString::fromStdString(fs.file_path(i)).toLower();
+        if (p.endsWith(QLatin1String(".!bt"))) p.chop(4);
+        for (const auto &ext : videoExts)
+            if (p.endsWith(ext)) return true;
+    }
+    return false;
+}
 
-    // Serialize: one archive at a time so a multi-archive torrent never opens a
-    // swarm of extractor windows. Each archive still retries every password first.
-    auto processArchive = std::make_shared<std::function<void(int)>>();
-    *processArchive = [this, archives, processArchive](int ai) {
-        if (ai >= archives.size()) return;
-        const QString archive = archives.at(ai);
-        QFileInfo fi(archive);
-        QString extractDir = fi.absolutePath();
-
-        QStringList passwords = m_extractPasswords;
-        // Try without password first, then each password
-        QStringList attempts;
-        attempts << QString();
-        attempts << passwords;
-
-        auto tryExtract = [this, archive, extractDir, attempts, processArchive, ai](int attemptIdx) {
-            auto self = std::make_shared<std::function<void(int)>>();
-            *self = [this, archive, extractDir, attempts, self, processArchive, ai](int idx) {
-                if (idx >= attempts.size()) {
-                    qDebug() << "[session] extraction failed (all passwords tried):" << archive;
-                    emit torrentError(tr_("extract_failed").arg(QFileInfo(archive).fileName()));
-                    (*processArchive)(ai + 1);          // move on to the next archive
-                    return;
-                }
-
-                QString password = attempts[idx];
-                QStringList args;
-                QString program;
-
-#ifdef Q_OS_WIN
-                // Prefer 7-Zip (silent CLI, every format). Many Windows users
-                // only have WinRAR, though, so fall back to it: UnRAR.exe is a
-                // silent CLI for .rar, and WinRAR.exe handles every format.
-                QString sevenZip;
-                for (const QString &path : {
-                         QStringLiteral("C:/Program Files/7-Zip/7z.exe"),
-                         QStringLiteral("C:/Program Files (x86)/7-Zip/7z.exe")})
-                    if (QFile::exists(path)) { sevenZip = path; break; }
-                if (sevenZip.isEmpty())
-                    sevenZip = QStandardPaths::findExecutable(QStringLiteral("7z"));
-
-                QString winrarDir;
-                for (const QString &dir : {
-                         QStringLiteral("C:/Program Files/WinRAR/"),
-                         QStringLiteral("C:/Program Files (x86)/WinRAR/")})
-                    if (QFile::exists(dir + QStringLiteral("WinRAR.exe"))) { winrarDir = dir; break; }
-
-                const bool isRar = archive.endsWith(QStringLiteral(".rar"), Qt::CaseInsensitive);
-                if (!sevenZip.isEmpty()) {
-                    program = sevenZip;
-                    args << QStringLiteral("x") << archive
-                         << QStringLiteral("-o") + extractDir
-                         << QStringLiteral("-y") << QStringLiteral("-aoa");
-                    if (!password.isEmpty())
-                        args << QStringLiteral("-p") + password;
-                } else if (isRar && !winrarDir.isEmpty()
-                           && QFile::exists(winrarDir + QStringLiteral("UnRAR.exe"))) {
-                    program = winrarDir + QStringLiteral("UnRAR.exe");
-                    args << QStringLiteral("x") << QStringLiteral("-y") << QStringLiteral("-o+")
-                         << (password.isEmpty() ? QStringLiteral("-p-")        // never prompt
-                                                : QStringLiteral("-p") + password)
-                         << archive << extractDir + QStringLiteral("/");
-                } else if (!winrarDir.isEmpty()) {
-                    program = winrarDir + QStringLiteral("WinRAR.exe");
-                    args << QStringLiteral("x") << QStringLiteral("-y")
-                         << QStringLiteral("-ibck") << QStringLiteral("-inul");
-                    if (!password.isEmpty())
-                        args << QStringLiteral("-p") + password;
-                    args << archive << extractDir + QStringLiteral("/");
-                } else {
-                    program = QStringLiteral("7z.exe");   // last resort: rely on PATH
-                    args << QStringLiteral("x") << archive
-                         << QStringLiteral("-o") + extractDir
-                         << QStringLiteral("-y") << QStringLiteral("-aoa");
-                    if (!password.isEmpty())
-                        args << QStringLiteral("-p") + password;
-                }
-#else
-                if (archive.endsWith(QStringLiteral(".rar"))) {
-                    program = QStringLiteral("unrar");
-                    args << QStringLiteral("x") << QStringLiteral("-o+");
-                    if (!password.isEmpty())
-                        args << QStringLiteral("-p") + password;
-                    args << archive << extractDir + QStringLiteral("/");
-                } else if (archive.endsWith(QStringLiteral(".zip"))) {
-                    program = QStringLiteral("unzip");
-                    if (!password.isEmpty())
-                        args << QStringLiteral("-P") << password;
-                    args << QStringLiteral("-o") << archive
-                         << QStringLiteral("-d") << extractDir;
-                } else {
-                    program = QStringLiteral("7z");
-                    args << QStringLiteral("x") << archive
-                         << QStringLiteral("-o") + extractDir
-                         << QStringLiteral("-y");
-                    if (!password.isEmpty())
-                        args << QStringLiteral("-p") + password;
-                }
-#endif
-
-                qDebug() << "[session] auto-extract attempt" << idx << ":" << program
-                         << (password.isEmpty() ? "(no password)" : "(with password)");
-
-                auto *proc = new QProcess(this);
-                connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                        this, [this, proc, archive, idx, self, processArchive, ai](int exitCode, QProcess::ExitStatus) {
-                    proc->deleteLater();
-                    if (exitCode == 0) {
-                        qDebug() << "[session] extraction complete:" << archive;
-                        if (m_autoExtractDelete) {
-                            QFile::remove(archive);
-                            QFileInfo fi(archive);
-                            QDir dir = fi.absoluteDir();
-                            QString baseName = fi.completeBaseName();
-                            for (const auto &related : dir.entryInfoList(QDir::Files)) {
-                                QString name = related.fileName();
-                                if (name.startsWith(baseName) &&
-                                    (name.endsWith(QStringLiteral(".rar")) ||
-                                     name.contains(QRegularExpression(QStringLiteral("\\.(r\\d+|part\\d+\\.rar)$"))))) {
-                                    QFile::remove(related.absoluteFilePath());
-                                }
-                            }
-                        }
-                        (*processArchive)(ai + 1);     // success → next archive in the queue
-                    } else {
-                        (*self)(idx + 1);
-                    }
-                });
-                proc->start(program, args);
-            };
-            (*self)(attemptIdx);
-        };
-        tryExtract(0);
-    };
-    (*processArchive)(0);
+void SessionManager::extractTorrent(int index, const QString &password)
+{
+    if (index < 0 || index >= static_cast<int>(m_torrents.size())) return;
+    const TorrentInfo info = torrentAt(index);
+    extractArchives(info.savePath, info.name, password, torrentHashAt(index));
 }
 
 // --- Temp path ---

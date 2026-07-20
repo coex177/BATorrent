@@ -2,8 +2,8 @@
 // Copyright (c) 2024-2026 Mateus Cruz
 // See LICENSE file for details
 
-#include "streamserver.h"
-#include "../torrent/sessionmanager.h"
+#include "webui/streamserver.h"
+#include "torrent/iengine.h"
 
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -42,7 +42,7 @@ QByteArray contentType(const QString &path)
 class StreamConnection : public QObject
 {
 public:
-    StreamConnection(QTcpSocket *sock, SessionManager *session)
+    StreamConnection(QTcpSocket *sock, IEngine *session)
         : QObject(sock), m_sock(sock), m_session(session)
     {
         connect(m_sock, &QTcpSocket::readyRead, this, &StreamConnection::onReadyRead);
@@ -74,7 +74,7 @@ private:
         if (method != "GET" && !head) { fail(405); return; }
 
         // /stream/<hash>/<fileIndex>
-        const QRegularExpression re(QStringLiteral("^/stream/([0-9a-fA-F]+)/(\\d+)"));
+        static const QRegularExpression re(QStringLiteral("^/stream/([0-9a-fA-F]+)/(\\d+)"));
         const auto m = re.match(path);
         if (!m.hasMatch()) { fail(404); return; }
         m_hash = m.captured(1);
@@ -90,7 +90,7 @@ private:
         for (const QByteArray &ln : lines) {
             const QByteArray l = ln.trimmed();
             if (l.toLower().startsWith("range:")) {
-                const QRegularExpression rr(QStringLiteral("bytes=(\\d*)-(\\d*)"));
+                static const QRegularExpression rr(QStringLiteral("bytes=(\\d*)-(\\d*)"));
                 const auto rm = rr.match(QString::fromUtf8(l));
                 if (rm.hasMatch()) {
                     ranged = true;
@@ -204,7 +204,7 @@ private:
     }
 
     QTcpSocket *m_sock;
-    SessionManager *m_session;
+    IEngine *m_session;
     QByteArray m_req;
     bool m_started = false;
     QString m_hash;
@@ -217,7 +217,7 @@ private:
 
 } // namespace
 
-StreamServer::StreamServer(SessionManager *session, QObject *parent)
+StreamServer::StreamServer(IEngine *session, QObject *parent)
     : QObject(parent), m_session(session) {}
 
 StreamServer::~StreamServer() { stop(); }

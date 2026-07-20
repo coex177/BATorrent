@@ -5,8 +5,12 @@
 # =============================================================================
 enable_testing()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Svg Test)
-find_package(LibtorrentRasterbar REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Svg Test Multimedia)
+# In fork mode the tests must exercise the SAME vendored engine the app ships
+# (BAT_TORRENT_LIB set by the root CMakeLists), not the system libtorrent.
+if(NOT BAT_LIBTORRENT_SOURCE)
+    find_package(LibtorrentRasterbar REQUIRED)
+endif()
 
 # --- Fetch Catch2 v3 ---
 include(FetchContent)
@@ -22,38 +26,84 @@ include(Catch)
 
 # --- Common sources (everything except main.cpp) ---
 set(COMMON_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/torrent/iengine.h        # header-only QObject — listed so AUTOMOC builds its metaobject
     ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/translator.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/statshistory.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/subtitleparser.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/subtitlesearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_streaming.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_persistence.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_categories.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_pertorrent.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_alerts.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_info.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_network.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/sessionmanager_security.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/ipblocklist.cpp
+    ${CMAKE_SOURCE_DIR}/src/torrent/proxycontroller.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/crashhandler.cpp     # CrashHandler::lastReport (used by qmlposterbridge)
+    ${CMAKE_SOURCE_DIR}/src/services/platform/translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/platform/statshistory.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/platform/soundplayer.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/subtitles/subtitleparser.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/subtitles/subtitlesearch.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/suspiciousscan.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/archivescan.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/archiveextractor.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/releasepick.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/searchranker.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/debridpick.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/installerprofile.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/defender.cpp
     ${CMAKE_SOURCE_DIR}/src/webui/webserver.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/rssmanager.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/addonmanager.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/updater.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/logger.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/nameparser.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/gamesourcemanager.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/rssmanager.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/discovery/addonmanager.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/updater.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/platform/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/audiomode.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/episodegroup.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/nameparser.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/mkvchapters.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/discovery/gamesourcemanager.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/downloads/httpdownload.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/downloads/httpdownloadmanager.cpp
     # C++<->QML bridge layer (split per domain) + its backend deps (for test_bridge)
-    ${CMAKE_SOURCE_DIR}/src/gui/qmlposterbridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/gui/qmlpostermodel.cpp
-    ${CMAKE_SOURCE_DIR}/src/gui/qmlsessionbridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/gui/qmlthemebridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/gui/qmlsearchbridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/gui/qmlsettingsbridge.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/metadataresolver.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/discoveryservice.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/qrcodegen.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/geoip.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/discordrpc.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/notifier.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/secretstore.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlposterbridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlpostermodel.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsessionbridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsessionbridge_games.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsessionbridge_library.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsessionbridge_playback.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsessionbridge_selection.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsessionbridge_disk.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlthemebridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsearchbridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsettingsbridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlrssbridge.h          # AUTOMOC: classes implemented in qmlposterbridge.cpp
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmladdonbridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlpairingbridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlsubtitlebridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmllogbridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmli18nbridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlnotificationbridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/discordrpcbridge.h
+    ${CMAKE_SOURCE_DIR}/src/bridges/qmlupdaterbridge.h
+    ${CMAKE_SOURCE_DIR}/src/services/metadata/metadataresolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/discovery/discoveryservice.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/platform/qrcodegen.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/geoip.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/geoipdb.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/geoipprovider.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/discordrpc.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/integrations/notifier.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/passwordhash.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/security/secretstore.cpp
 )
 
+find_package(ZLIB REQUIRED)
 set(COMMON_LIBS
-    Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Test
-    LibtorrentRasterbar::torrent-rasterbar
+    Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Test Qt6::Multimedia
+    ${BAT_TORRENT_LIB}
     Catch2::Catch2WithMain
+    ZLIB::ZLIB
 )
 if(WIN32)
     list(APPEND COMMON_LIBS shell32 ole32 dwmapi)   # shell ops + DWM title-bar (qmlthemebridge) via the bridge deps
@@ -158,12 +208,43 @@ endfunction()
 # =============================================================================
 #  TEST TARGETS
 # =============================================================================
+# libFuzzer harness for the untrusted-input parsers (clang only).
+# Configure with -DBAT_FUZZ=ON, then: ./fuzz_nameparser -max_total_time=30
+option(BAT_FUZZ "Build libFuzzer harnesses" OFF)
+if(BAT_FUZZ)
+    add_executable(fuzz_nameparser
+        ${CMAKE_CURRENT_SOURCE_DIR}/fuzz_nameparser.cpp
+        ${CMAKE_SOURCE_DIR}/src/services/metadata/nameparser.cpp
+        ${CMAKE_SOURCE_DIR}/src/services/security/suspiciousscan.cpp
+        ${CMAKE_SOURCE_DIR}/src/services/security/archivescan.cpp)
+    target_compile_options(fuzz_nameparser PRIVATE -fsanitize=fuzzer,address,undefined -g)
+    target_link_options(fuzz_nameparser PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_libraries(fuzz_nameparser PRIVATE Qt6::Core)
+    target_include_directories(fuzz_nameparser PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    message(STATUS "[BAT] Fuzz harnesses ENABLED")
+endif()
+
 bat_add_test(test_security   test_security.cpp)
 bat_add_test(test_memory     test_memory.cpp)
 bat_add_test(test_unit       test_unit.cpp)
 bat_add_test(test_nameparser test_nameparser.cpp)
+bat_add_test(test_episodegroup test_episodegroup.cpp)
 bat_add_test(test_bridge     test_bridge.cpp)
 bat_add_test(test_gamesource test_gamesource.cpp)
+bat_add_test(test_memguard   test_memguard.cpp)
+bat_add_test(test_geoipdb    test_geoipdb.cpp)
+bat_add_test(test_searchranker test_searchranker.cpp)
+bat_add_test(test_ipblocklist  test_ipblocklist.cpp)
+bat_add_test(test_bandwidthschedule test_bandwidthschedule.cpp)
+bat_add_test(test_magnettrackers test_magnettrackers.cpp)
+bat_add_test(test_mkvchapters test_mkvchapters.cpp)
+bat_add_test(test_rangeplan test_rangeplan.cpp)
+bat_add_test(test_httpdownload test_httpdownload.cpp)
+bat_add_test(test_httpdownloadmanager test_httpdownloadmanager.cpp)
+bat_add_test(test_filehostresolver test_filehostresolver.cpp)
+bat_add_test(test_proxycontroller test_proxycontroller.cpp)
+bat_add_test(test_ipcprotocol test_ipcprotocol.cpp)
+bat_add_test(test_debrid     test_debrid.cpp)
 
 # =============================================================================
 #  QML layer (Qt Quick Test) — drives real .qml components headless (offscreen).
