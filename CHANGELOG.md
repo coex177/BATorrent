@@ -1,5 +1,36 @@
 # Changelog
 
+## v4.7.0a-rc3 — fork build (coex177)
+
+The [coex177 fork](https://github.com/coex177/BATorrent) rebased onto upstream's
+`v4.7.0-rc3`. Everything from the v4.1.0 fork builds is re-applied on top, so
+this is upstream's "Cinema" release plus the fork's list/rename work. Note the
+base is a **release candidate**, not a final 4.7.0.
+
+### Added
+- **Scrollbar visibility setting** — choose between always-on scrollbars and the
+  default auto-hide behaviour. Applies to the list, the grid and the detail tabs.
+  Always-on still hides the bar when there is nothing to scroll, the way normal
+  desktop apps do.
+- **Dense rows toggle** — tighter row height in List view. This replaces the
+  fork's old "Compact" view mode: upstream's classic row already drops the cover
+  art, so only the row height was missing.
+
+### Re-applied on top of 4.7.0-rc3
+- Torrent rename (files, folders and display name, F2), including the separate
+  file-extension field in the rename dialog.
+- "Added on" column, sortable, with real dates recovered from resume data.
+- Sortable column titles and a pinned header row.
+- Delete key opens the Remove dialog, F2 opens Rename.
+- Double-clicking a file in the Files tab opens it with your default app.
+- Sort column, sort direction and the selected detail tab persist across restarts.
+- Periodic resume-data save (every 5 minutes) so a crash doesn't lose progress.
+
+### Notes
+- Some fork patches were dropped because upstream fixed the same things
+  independently: the atomic `.resume` write, the tray right-click menu, and the
+  remove-while-locked retry logic. Upstream's versions are further along.
+
 ## v4.1.0b — fork build (coex177)
 
 Second alpha of the [coex177 fork](https://github.com/coex177/BATorrent), building on `v4.1.0a`. A round of list/table quality-of-life work plus a couple of interaction fixes. Windows-only alpha, based on the original BATorrent v4.1.0.

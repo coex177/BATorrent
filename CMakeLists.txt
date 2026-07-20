@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(BATorrent VERSION 4.7.0)
 # Suffix appended to the displayed/reported version (CMake's project VERSION must
 # stay numeric). Fork builds carry a letter; "" reports the upstream version.
-set(BAT_VERSION_SUFFIX "")
+set(BAT_VERSION_SUFFIX "a-rc3")
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Svg Multimedia Quick QuickWidgets QuickControls2)
 
 # libtorrent: link the system package by default, or build our vendored fork from
