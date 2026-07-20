@@ -165,6 +165,7 @@ QVariant QmlPosterModel::data(const QModelIndex &index, int role) const
     case DownRateRole:    return info.downloadRate;
     case UpRateRole:      return info.uploadRate;
     case SizeBytesRole:   return static_cast<qint64>(info.totalSize);
+    case AddedAtRole:     return static_cast<qint64>(info.addedAt) * 1000;
     case NumSeedsRole:    return info.numSeeds;
     case RatioRole:       return info.ratio;
     case AvailabilityRole: return info.availability;
@@ -206,6 +207,7 @@ QHash<int, QByteArray> QmlPosterModel::roleNames() const
         {UpRateRole,      "upRate"},
         {SizeRole,        "size"},
         {SizeBytesRole,   "sizeBytes"},
+        {AddedAtRole,     "addedAt"},
         {NumSeedsRole,    "numSeeds"},
         {RatioRole,       "ratio"},
         {AvailabilityRole, "availability"},
@@ -356,6 +358,10 @@ bool QmlTorrentFilterProxy::lessThan(const QModelIndex &l, const QModelIndex &r)
     if (m_sortColumn == QStringLiteral("category")) {
         auto [a, b] = raw(QmlPosterModel::CategoryRole);
         return a.toString() < b.toString();
+    }
+    if (m_sortColumn == QStringLiteral("added")) {
+        auto [a, b] = raw(QmlPosterModel::AddedAtRole);
+        return a.toLongLong() < b.toLongLong();
     }
     if (m_sortColumn == QStringLiteral("peers")) {
         auto [a, b] = raw(QmlPosterModel::NumPeersRole);

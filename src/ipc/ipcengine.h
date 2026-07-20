@@ -51,6 +51,7 @@ public:
     bool torrentHasArchives(int index) const override;
     int torrentDownloadLimit(int index) const override;
     QString streamFilePath(int torrentIndex, int fileIndex) const override;
+    bool torrentInFolder(int torrentIndex) const override;
     void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath) override;
     void renameTorrent(int torrentIndex, const QString &newName) override;
     void pauseTorrent(int index) override;

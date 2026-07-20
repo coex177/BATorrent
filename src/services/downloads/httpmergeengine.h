@@ -43,6 +43,7 @@ public:
     QString torrentMagnetUri(int index) const override;
     QStringList torrentFileNames(int index) const override;
     QString streamFilePath(int torrentIndex, int fileIndex) const override;
+    bool torrentInFolder(int torrentIndex) const override;
     qint64 streamFileSize(int torrentIndex, int fileIndex) const override;
 
     // ---------------------------------------------------------------------

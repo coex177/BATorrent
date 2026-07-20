@@ -273,6 +273,8 @@ QByteArray EngineHost::dispatch(const QString &method, const QByteArray &args)
         out << m_session->torrentFileNames(idx());
     } else if (method == QLatin1String("streamFilePath")) {
         qint32 ti, fi; in >> ti >> fi; out << m_session->streamFilePath(ti, fi);
+    } else if (method == QLatin1String("torrentInFolder")) {
+        qint32 ti; in >> ti; out << m_session->torrentInFolder(ti);
     } else if (method == QLatin1String("streamFileStats")) {
         qint32 ti, fi; in >> ti >> fi; out << m_session->streamFileStats(ti, fi);
     } else if (method == QLatin1String("statsWrapped")) {

@@ -713,6 +713,21 @@ void QmlSessionBridge::removeTrackerFromSelected(const QString &url)
     emit selectionChanged(); emit selectionListsChanged();
 }
 
+bool QmlSessionBridge::selectedIsFolder() const
+{
+    return hasSelection() && m_session->torrentInFolder(m_selectedIndex);
+}
+
+void QmlSessionBridge::openFileAt(int fileIndex)
+{
+    if (!hasSelection()) return;
+    const QString path = m_session->streamFilePath(m_selectedIndex, fileIndex);
+    // An incomplete file still carries the ".!bt" suffix, which the OS has no
+    // handler for — wait until it's downloaded rather than failing on a click.
+    if (path.isEmpty() || path.endsWith(QStringLiteral(".!bt"))) return;
+    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
 void QmlSessionBridge::renameSelectedFile(int fileIndex, const QString &newName)
 {
     if (!hasSelection() || newName.isEmpty()) return;

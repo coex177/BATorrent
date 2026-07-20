@@ -314,6 +314,9 @@ QStringList IpcEngine::torrentFileNames(int i) const
 QString IpcEngine::streamFilePath(int ti, int fi) const
 { QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << qint32(ti) << qint32(fi);
   QDataStream in(request(QStringLiteral("streamFilePath"), d)); in.setVersion(ipc::kStreamVersion); QString s; in >> s; return s; }
+bool IpcEngine::torrentInFolder(int ti) const
+{ QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << qint32(ti);
+  QDataStream in(request(QStringLiteral("torrentInFolder"), d)); in.setVersion(ipc::kStreamVersion); bool b = false; in >> b; return b; }
 QVariantMap IpcEngine::streamFileStats(int ti, int fi) const
 { QByteArray d; QDataStream o(&d, QIODevice::WriteOnly); o.setVersion(ipc::kStreamVersion); o << qint32(ti) << qint32(fi);
   QDataStream in(request(QStringLiteral("streamFileStats"), d)); in.setVersion(ipc::kStreamVersion); QVariantMap m; in >> m; return m; }

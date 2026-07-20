@@ -28,6 +28,7 @@ public:
         DownRateRole,
         UpRateRole,
         SizeBytesRole,
+        AddedAtRole,
         NumSeedsRole,       // classic-view power columns
         RatioRole,
         AvailabilityRole,

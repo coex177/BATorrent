@@ -301,6 +301,11 @@ void SessionManager::loadResumeData()
         }
         if (!h.is_valid()) continue;
         m_torrents.push_back(h);
+        if (atp.added_time > 0) {
+            const QString rhash = QString::fromStdString(
+                (std::ostringstream() << atp.info_hashes.get_best()).str());
+            if (!rhash.isEmpty()) m_addedTimes[rhash] = static_cast<qint64>(atp.added_time);
+        }
         // A magnet persisted before its metadata arrived: rebuild the URI-hash
         // maps so the UI keys (cover/name) and the "fetching metadata"
         // stateDetail work the same as on a fresh add.

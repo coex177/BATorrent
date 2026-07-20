@@ -183,6 +183,8 @@ QStringList HttpMergeEngine::torrentFileNames(int index) const
     return m_inner->torrentFileNames(index);
 }
 
+bool HttpMergeEngine::torrentInFolder(int t) const { return !isHttp(t) && m_inner->torrentInFolder(t); }
+
 QString HttpMergeEngine::streamFilePath(int torrentIndex, int fileIndex) const
 {
     if (isHttp(torrentIndex)) {

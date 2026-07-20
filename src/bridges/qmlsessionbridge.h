@@ -265,6 +265,11 @@ public:
     Q_INVOKABLE void addTrackerToSelected(const QString &url);
     Q_INVOKABLE void removeTrackerFromSelected(const QString &url);
     Q_INVOKABLE void renameSelectedFile(int fileIndex, const QString &newName);
+    // Folder-layout torrents have no extension: the rename dialog hides its
+    // extension field for them.
+    Q_INVOKABLE bool selectedIsFolder() const;
+    // Open one file of the selection with the OS default application.
+    Q_INVOKABLE void openFileAt(int fileIndex);
     Q_INVOKABLE void setSelectedFilePriority(int fileIndex, int priority);
     Q_INVOKABLE void copySelectedName();
     Q_INVOKABLE void openSelectedFile();

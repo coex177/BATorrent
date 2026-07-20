@@ -668,8 +668,6 @@ private:
     // resume data on load so existing torrents keep their real date; set to "now"
     // on a fresh add. Not separately persisted — resume data is the source.
     QHash<QString, qint64> m_addedTimes;
-    // Folder left behind by a rename, pruned once its files have all moved.
-    std::map<lt::torrent_handle, QString> m_renameOldRoots;
 
     // VPN / Interface binding
     QString m_outgoingInterface;

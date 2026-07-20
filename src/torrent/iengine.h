@@ -44,6 +44,7 @@ public:
     virtual bool torrentHasArchives(int index) const = 0;
     virtual int torrentDownloadLimit(int index) const = 0;
     virtual QString streamFilePath(int torrentIndex, int fileIndex) const = 0;
+    virtual bool torrentInFolder(int torrentIndex) const = 0;
     virtual void renameFile(int torrentIndex, int fileIndex, const QString &newRelativePath) = 0;
     virtual void renameTorrent(int torrentIndex, const QString &newName) = 0;
     virtual void pauseTorrent(int index) = 0;
