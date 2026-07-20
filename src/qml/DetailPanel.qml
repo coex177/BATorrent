@@ -117,18 +117,20 @@ Rectangle {
 
             DetailGeneral { win: detailPanel.win; vertical: false }
             DetailPeers {
+                scrollbarsAlwaysOn: detailPanel.win ? detailPanel.win.scrollbarsAlwaysOn : false
                 peers: (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 1) ? session.selectedPeerList : []
                 loading: detailPanel.win.peersTabOpen && session.peersLoading
             }
             DetailFiles {
+                scrollbarsAlwaysOn: detailPanel.win ? detailPanel.win.scrollbarsAlwaysOn : false
                 files: (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 2) ? session.selectedFiles : []
                 onRenameFile: function(idx, current) {
                     detailPanel.renameFileRequested(idx, current)
                 }
                 onOpenFile: function(idx) { if (typeof session !== "undefined") session.openFileAt(idx) }
             }
-            DetailTrackers { trackers: (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 3) ? session.selectedTrackers : [] }
-            DetailPieces   { pieces:   (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 4) ? session.selectedPieces   : ({}) }
+            DetailTrackers { scrollbarsAlwaysOn: detailPanel.win ? detailPanel.win.scrollbarsAlwaysOn : false; trackers: (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 3) ? session.selectedTrackers : [] }
+            DetailPieces   { scrollbarsAlwaysOn: detailPanel.win ? detailPanel.win.scrollbarsAlwaysOn : false; pieces:   (detailPanel.visible && detailPanel.win.hasSel && detailPanel.win.detailTab === 4) ? session.selectedPieces   : ({}) }
             DetailGraph {
                 dl: (detailPanel.visible && detailPanel.win.hasSel) ? session.selectedDownHistory : []
                 ul: (detailPanel.visible && detailPanel.win.hasSel) ? session.selectedUpHistory : []

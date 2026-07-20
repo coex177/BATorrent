@@ -11,6 +11,7 @@ import "../theme"
 
 ColumnLayout {
     id: pane
+    property bool scrollbarsAlwaysOn: false
     property var peers: []
     property bool loading: false   // building the peer list (deferred off the click)
     property bool compact: false   // 2-line rows for the 340px side inspector
@@ -64,10 +65,15 @@ ColumnLayout {
         }
     }
     ListView {
+        id: paneView
         Layout.fillWidth: true; Layout.fillHeight: true; Layout.topMargin: 8; clip: true; model: pane.peers
         visible: pane.peers.length > 0
         boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar {
+            policy: (pane.scrollbarsAlwaysOn && paneView.contentHeight > paneView.height)
+                       ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            implicitWidth: 12
+        }
         delegate: pane.compact ? compactRow : wideRow
     }
 

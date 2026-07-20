@@ -187,7 +187,10 @@ Item {
         interactive: true
         z: 1
 
-        ScrollBar.vertical: ScrollBar { id: gridVBar; policy: win.scrollbarPolicy; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar { id: gridVBar
+            policy: (win.scrollbarsAlwaysOn && grid.contentHeight > grid.height)
+                    ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            implicitWidth: 12 }
         delegate: PosterTile { win: libraryView.win }
     }
 
@@ -270,7 +273,10 @@ Item {
         interactive: true
         z: 1
         WheelScroller { flick: list }
-        ScrollBar.vertical: ScrollBar { id: listVBar; policy: win.scrollbarPolicy; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar { id: listVBar
+            policy: (win.scrollbarsAlwaysOn && list.contentHeight > list.height)
+                    ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            implicitWidth: 12 }
         readonly property bool bulkRemove: typeof session !== "undefined" && session.bulkRemoveInProgress
         add: Transition { NumberAnimation { properties: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic } }
         remove: Transition { NumberAnimation { properties: "opacity"; to: 0; duration: list.bulkRemove ? 0 : 120; easing.type: Easing.OutCubic } }

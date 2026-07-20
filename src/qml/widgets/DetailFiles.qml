@@ -12,6 +12,7 @@ import "../theme"
 
 ColumnLayout {
     id: pane
+    property bool scrollbarsAlwaysOn: false
     property var files: []
     signal renameFile(int idx, string current)
     signal openFile(int idx)
@@ -62,10 +63,15 @@ ColumnLayout {
         text: (i18n.language, i18n.t("detailfiles_empty")); color: Theme.t4; font.pixelSize: 11; font.family: Theme.fontSans
     }
     ListView {
+        id: paneView
         Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: pane.files
         visible: pane.files.length > 0
         boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar {
+            policy: (pane.scrollbarsAlwaysOn && paneView.contentHeight > paneView.height)
+                       ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            implicitWidth: 12
+        }
         delegate: Rectangle {
             id: row
             width: ListView.view.width; height: 34

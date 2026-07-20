@@ -10,6 +10,7 @@ import "../theme"
 
 ColumnLayout {
     id: pane
+    property bool scrollbarsAlwaysOn: false
     // { total, done, cells: [0..1] } — bounded/downsampled by the bridge so a
     // huge torrent doesn't ship tens of thousands of entries (crashed on Windows)
     property var pieces: ({})
@@ -31,6 +32,7 @@ ColumnLayout {
     }
 
     Flickable {
+        id: paneView
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.leftMargin: Theme.sp5
@@ -39,7 +41,11 @@ ColumnLayout {
         clip: true
         contentHeight: pieceGrid.height
         boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar {
+            policy: (pane.scrollbarsAlwaysOn && paneView.contentHeight > paneView.height)
+                       ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            implicitWidth: 12
+        }
 
         Grid {
             id: pieceGrid

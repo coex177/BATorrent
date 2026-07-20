@@ -91,6 +91,8 @@ Window {
             win.layoutClassic = (v === true || v === 1 || v === "1" || v === "true")
             win.detailBottom = settings.get("detailBottom") === true
             win.showDownloadChip = settings.get("showDownloadChip") !== false
+            win.scrollbarsAlwaysOn = settings.get("scrollbarsAlwaysOn") === true
+            win.denseRows = settings.get("denseRows") === true
         }
     }
 
@@ -237,7 +239,6 @@ Window {
     readonly property int listRowH: denseRows ? 40 : 56
     // Scrollbar visibility: false = AsNeeded (auto-hide), true = AlwaysOn.
     property bool scrollbarsAlwaysOn: false
-    readonly property int scrollbarPolicy: scrollbarsAlwaysOn ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
     property string sortColumn: ""
     property bool sortAsc: true
     onSortColumnChanged: if (typeof settings !== "undefined") settings.set("sortColumn", sortColumn)

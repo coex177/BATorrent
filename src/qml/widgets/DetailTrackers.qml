@@ -11,6 +11,7 @@ import "../theme"
 
 ColumnLayout {
     id: pane
+    property bool scrollbarsAlwaysOn: false
     property var trackers: []
     property bool compact: false   // 2-line rows for the 340px side inspector
     spacing: 0
@@ -35,10 +36,15 @@ ColumnLayout {
         text: (i18n.language, i18n.t("inspector_no_trackers2")); color: Theme.t4; font.pixelSize: 11; font.family: Theme.fontSans
     }
     ListView {
+        id: paneView
         Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: pane.trackers
         visible: pane.trackers.length > 0
         boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; implicitWidth: 12 }
+        ScrollBar.vertical: ScrollBar {
+            policy: (pane.scrollbarsAlwaysOn && paneView.contentHeight > paneView.height)
+                       ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            implicitWidth: 12
+        }
         delegate: pane.compact ? compactRow : wideRow
     }
 
