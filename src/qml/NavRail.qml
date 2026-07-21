@@ -34,6 +34,9 @@ Rectangle {
         hovered: dlHov.hovered
         active: rail.showDl
     }
+    // the rail lists every monitored volume at once, so only the filtering is
+    // used here — the rotation timer idles
+    readonly property DiskMonitor disk: DiskMonitor { id: dmon; active: false }
     property bool showDownloadChip: true    // host setting gate
     readonly property bool showDl: !collapsed && car.dlList.length > 0 && showDownloadChip
     Connections {
@@ -210,9 +213,9 @@ Rectangle {
             Layout.fillWidth: true
             Layout.leftMargin: 18; Layout.rightMargin: 18
             spacing: 11
-            visible: !rail.collapsed && typeof session !== "undefined" && session.diskVolumes.length > 0
+            visible: !rail.collapsed && dmon.volumes.length > 0
             Repeater {
-                model: typeof session !== "undefined" ? session.diskVolumes : []
+                model: dmon.volumes
                 delegate: Item {
                     id: dvItem
                     required property var modelData
@@ -466,7 +469,7 @@ Rectangle {
                                 text: !car.dlItem ? ""
                                       : car.slotResume ? i18n.t("hub_resume")
                                       : (car.dlItem.paused === true) ? i18n.t("state_paused")
-                                      : car.slotSeed ? ("↑ " + (car.dlItem.upSpeed || ""))
+                                      : (car.slotSeed || car.dlItem.seeding === true) ? ("↑ " + (car.dlItem.upSpeed || ""))
                                       : ("↓ " + (car.dlItem.downSpeed || ""))
                                 color: Theme.accent; font.pixelSize: 13; font.family: Theme.fontSans; font.features: Theme.tnum
                             }
@@ -474,7 +477,7 @@ Rectangle {
                             Text {
                                 text: !car.dlItem ? ""
                                       : car.slotResume ? (car.dlItem.metric || "")
-                                      : car.slotSeed ? ("⇅ " + (car.dlItem.ratio || "0.00"))
+                                      : (car.slotSeed || car.dlItem.seeding === true) ? ("⇅ " + (car.dlItem.ratio || "0.00"))
                                       : (Math.floor((car.dlItem.progress || 0) * 100) + "%")
                                 color: Theme.t2; font.pixelSize: 13; font.weight: Font.DemiBold; font.family: Theme.fontSans; font.features: Theme.tnum
                             }

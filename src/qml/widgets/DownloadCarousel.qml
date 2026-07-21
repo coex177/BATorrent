@@ -22,8 +22,26 @@ QtObject {
     // anything is transferring.
     readonly property bool slotResume: currentPage === 0 && resumeList.length > 0
     readonly property bool slotSeed: !slotResume && downloadList.length === 0 && seedingList.length > 0
-    readonly property var dlList: slotResume ? resumeList
-                                : (downloadList.length > 0 ? downloadList : seedingList)
+
+    // Starred torrents win outright: if the user picked any, the chip shows only
+    // those, downloading or not. Nothing starred → the contextual logic above.
+    readonly property var starredList: (typeof session !== "undefined") ? session.starredTransfers : []
+
+    property int cycleMs: 5000
+    function reloadPrefs() {
+        if (typeof settings === "undefined") return
+        var s = Number(settings.get("chipCycleSec"))
+        car.cycleMs = (s >= 1 && s <= 120) ? s * 1000 : 5000
+    }
+    Component.onCompleted: reloadPrefs()
+    readonly property var prefWatch: Connections {
+        target: typeof settings !== "undefined" ? settings : null
+        function onChanged() { car.reloadPrefs() }
+    }
+
+    readonly property var dlList: starredList.length > 0 ? starredList
+                                : (slotResume ? resumeList
+                                : (downloadList.length > 0 ? downloadList : seedingList))
     property int dlIndex: 0
     property int dlShown: 0
     readonly property var dlItem: (dlList.length > dlShown && dlShown >= 0) ? dlList[dlShown]
@@ -36,7 +54,7 @@ QtObject {
     function prev() { if (dlList.length > 0) dlIndex = (dlIndex - 1 + dlList.length) % dlList.length }
 
     readonly property Timer cycler: Timer {
-        interval: 5000
+        interval: car.cycleMs
         running: car.active && car.dlList.length > 1 && !car.hovered
         repeat: true
         onTriggered: car.next()

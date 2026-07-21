@@ -244,6 +244,9 @@ Item {
                 anchors.rightMargin: Theme.sp4
                 spacing: Theme.sp4
 
+                // star gutter — no label, no sort; just reserves the lane the
+                // row's star sits in so the name column still lines up
+                Item { Layout.preferredWidth: 18; Layout.fillHeight: true }
                 HCol { label: (i18n.language, i18n.t("col_name")); col: "name"; fill: true }
                 HCol { label: (i18n.language, i18n.t("col_size")); col: "size"; w: 72; alignRight: true }
                 HCol { label: (i18n.language, i18n.t("col_progress")); col: "progress"; w: 96 }
@@ -406,6 +409,16 @@ Item {
                 }
                 return
             }
+            // star gutter: toggle instead of selecting (hit-tested against the
+            // delegate's own cell so it stays right whatever the row height is)
+            var sd = list.itemAtIndex(clickRow)
+            if (mouse.button === Qt.LeftButton && sd && sd.starCell) {
+                var sp = sd.starCell.mapToItem(listArea, 0, 0)
+                if (mouse.x >= sp.x - 4 && mouse.x <= sp.x + sd.starCell.width + 4) {
+                    win.toggleStar(sd.infoHash)
+                    return
+                }
+            }
             if (mouse.button === Qt.RightButton) {
                 if (!win.isRowSelected(clickRow)) win.selectRow(clickRow, 0)
                 win.openContext(clickRow)
@@ -415,6 +428,12 @@ Item {
         }
         onDoubleClicked: function(mouse) {
             var r = rowAt(mouse.y, mouse.x)
+            // a double-click in the star gutter is two toggles, not "open"
+            var dd = r >= 0 ? list.itemAtIndex(r) : null
+            if (dd && dd.starCell) {
+                var dp = dd.starCell.mapToItem(listArea, 0, 0)
+                if (mouse.x >= dp.x - 4 && mouse.x <= dp.x + dd.starCell.width + 4) return
+            }
             // select the clicked row first so we reveal *that* torrent,
             // not whatever was selected before, then open its folder
             // with the file highlighted.

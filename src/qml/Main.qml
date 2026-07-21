@@ -70,6 +70,28 @@ Window {
     // the contextual continue/download chip in the top bar (some users find it
     // redundant on the Downloads page)
     property bool showDownloadChip: true
+    // Torrents the user starred to pin the top-bar chip to them. A plain hash
+    // set in QSettings — no engine round-trip, so it survives an engine restart
+    // and costs nothing on the C++ side.
+    property var starred: ({})
+    property int starredRev: 0          // bump to re-evaluate bindings (JS map isn't notifying)
+    function isStarred(hash) { return hash !== undefined && win.starred[hash] === true }
+    function toggleStar(hash) {
+        if (!hash) return
+        if (win.starred[hash]) delete win.starred[hash]; else win.starred[hash] = true
+        win.starredRev++
+        if (typeof settings !== "undefined")
+            settings.set("starredTorrents", Object.keys(win.starred).join(","))
+    }
+    function loadStarred() {
+        if (typeof settings === "undefined") return
+        var raw = String(settings.get("starredTorrents") || "")
+        var m = {}
+        var parts = raw.split(",")
+        for (var i = 0; i < parts.length; ++i) if (parts[i].length > 0) m[parts[i]] = true
+        win.starred = m
+        win.starredRev++
+    }
     readonly property Item navHost: layoutClassic ? navRailLoader.item : navBarLoader.item
     function selectTorrentByHash(infoHash) {
         if (typeof session === "undefined") return
@@ -127,6 +149,7 @@ Window {
             win.showDownloadChip = settings.get("showDownloadChip") !== false
             win.scrollbarsAlwaysOn = settings.get("scrollbarsAlwaysOn") === true
             win.denseRows = settings.get("denseRows") === true
+            win.loadStarred()
             var sc = settings.get("sortColumn")
             if (sc) {
                 win.sortColumn = sc

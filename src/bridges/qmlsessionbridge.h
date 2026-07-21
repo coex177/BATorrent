@@ -33,6 +33,10 @@ class QmlSessionBridge : public QObject
     Q_PROPERTY(QVariantList seedingTransfers READ seedingTransfers NOTIFY statsChanged)
     // continue watching/playing (resume) — the nav-rail slot's content on the Downloads tab
     Q_PROPERTY(QVariantList resumeItems READ resumeItems NOTIFY statsChanged)
+    // torrents the user starred in the list — walks every torrent, not the two
+    // curated lists above: a torrent finished in an earlier run sits at 100%
+    // *without* the completed flag, so it's in neither of them.
+    Q_PROPERTY(QVariantList starredTransfers READ starredTransfers NOTIFY statsChanged)
     Q_PROPERTY(QString totalDownloaded READ totalDownloaded NOTIFY statsChanged)
     Q_PROPERTY(QString totalUploaded READ totalUploaded NOTIFY statsChanged)
     Q_PROPERTY(QString globalRatio READ globalRatio NOTIFY statsChanged)
@@ -116,6 +120,7 @@ public:
     QVariantList activeDownloads() const;
     QVariantList seedingTransfers() const;
     QVariantList resumeItems() const;
+    QVariantList starredTransfers() const;
     QString totalDownloaded() const;
     QString totalUploaded() const;
     QString globalRatio() const;

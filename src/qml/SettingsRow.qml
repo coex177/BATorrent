@@ -96,6 +96,7 @@ ColumnLayout {
                 case "path": return cPath
                 case "timerange": return cTimeRange
                 case "days": return cDays
+                case "disks": return cDisks
                 case "anime": return cAnime
                 case "number": return cNumber
                 case "text": return cText
@@ -530,6 +531,65 @@ ColumnLayout {
                         }
                     }
                     Text { text: "h"; color: Theme.t4; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                }
+            }
+        }
+    }
+    // disks to watch in the top-bar gauge — pipe-joined volume names, empty = all
+    Component {
+        id: cDisks
+        Flow {
+            id: dsk
+            spacing: 6
+            width: 320
+            property string picked: (typeof settings !== "undefined") ? String(settings.get("monitoredDisks") || "") : ""
+            readonly property var vols: (typeof session !== "undefined") ? session.diskVolumes : []
+            function has(n) { return ("|" + dsk.picked + "|").indexOf("|" + n + "|") >= 0 }
+            function toggle(n) {
+                var cur = dsk.picked.length > 0 ? dsk.picked.split("|") : []
+                var i = cur.indexOf(n)
+                if (i >= 0) cur.splice(i, 1); else cur.push(n)
+                dsk.picked = cur.join("|")
+                if (typeof settings !== "undefined") settings.set("monitoredDisks", dsk.picked)
+            }
+            Rectangle {
+                height: 28; radius: 7
+                width: allTxt.implicitWidth + 20
+                readonly property bool sel: dsk.picked.length === 0
+                color: sel ? Theme.accentTint : Theme.field
+                border.color: sel ? Theme.accent : Theme.hair; border.width: 1
+                Text {
+                    id: allTxt
+                    anchors.centerIn: parent
+                    text: (i18n.language, i18n.t("disks_all"))
+                    color: parent.sel ? Theme.accentText : Theme.t3
+                    font.pixelSize: 11; font.weight: parent.sel ? Font.DemiBold : Font.Medium; font.family: Theme.fontSans
+                }
+                MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: { dsk.picked = ""; if (typeof settings !== "undefined") settings.set("monitoredDisks", "") }
+                }
+            }
+            Repeater {
+                model: dsk.vols
+                delegate: Rectangle {
+                    required property var modelData
+                    height: 28; radius: 7
+                    width: dTxt.implicitWidth + 20
+                    readonly property bool sel: dsk.has(modelData.name)
+                    color: sel ? Theme.accentTint : Theme.field
+                    border.color: sel ? Theme.accent : Theme.hair; border.width: 1
+                    Text {
+                        id: dTxt
+                        anchors.centerIn: parent
+                        text: parent.modelData.name
+                        color: parent.sel ? Theme.accentText : Theme.t3
+                        font.pixelSize: 11; font.weight: parent.sel ? Font.DemiBold : Font.Medium; font.family: Theme.fontSans
+                    }
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: dsk.toggle(parent.modelData.name)
+                    }
                 }
             }
         }

@@ -32,11 +32,13 @@ Rectangle {
     required property real availability
     required property string eta
     required property string posterPath
+    required property string infoHash
 
     readonly property string posterUrl: win.fileUrl(posterPath)
     // the "stalled why" tooltip is driven by listArea (its z:2
     // hover-exclusive MouseArea starves any in-delegate handler)
     readonly property Item stateCell: lrowStateText
+    readonly property Item starCell: lrowStar
 
     color: win.isRowSelected(index) ? Theme.sel : (listArea.hoveredRow === index ? Theme.hover : "transparent")
 
@@ -58,6 +60,23 @@ Rectangle {
         anchors.leftMargin: Theme.sp4
         anchors.rightMargin: Theme.sp4
         spacing: Theme.sp4
+
+        // star: picks this torrent for the top-bar chip rotation. The click is
+        // owned by listArea (its z:2 hover-exclusive MouseArea starves any
+        // in-delegate handler), same arrangement as the state-cell tooltip.
+        Item {
+            id: lrowStar
+            Layout.preferredWidth: 18
+            Layout.fillHeight: true
+            readonly property bool on: (lrow.win.starredRev, lrow.win.isStarred(lrow.infoHash))
+            IconImg {
+                anchors.centerIn: parent
+                s: 13
+                src: lrowStar.on ? "qrc:/icons/star.svg" : "qrc:/icons/star-line.svg"
+                tint: lrowStar.on ? Theme.amber : Theme.t4
+                opacity: lrowStar.on ? 1 : (listArea.hoveredRow === lrow.index ? 0.75 : 0.3)
+            }
+        }
 
         // classic = cover-less, dense qBittorrent-style row (this ListView is
         // only ever shown in classic mode now)

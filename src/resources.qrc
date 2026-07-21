@@ -73,6 +73,8 @@
 <file>icons/chevron.svg</file>
 <file>icons/heart.svg</file>
 <file>icons/heart-line.svg</file>
+<file>icons/star.svg</file>
+<file>icons/star-line.svg</file>
 <file>icons/sliders.svg</file>
 <file>icons/close.svg</file>
 <file>icons/flags/en.svg</file>
@@ -185,6 +187,7 @@
 <file>../src/qml/widgets/DetailGraph.qml</file>
 <file>../src/qml/widgets/DetailTabs.qml</file>
 <file>../src/qml/widgets/DownloadCarousel.qml</file>
+<file>../src/qml/widgets/DiskMonitor.qml</file>
 <file>../src/qml/widgets/DetailSidebar.qml</file>
 <file>../src/qml/widgets/PosterShelf.qml</file>
 <file>../src/qml/widgets/DetailFiles.qml</file>

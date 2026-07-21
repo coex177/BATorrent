@@ -19,6 +19,7 @@ DetailGeneral 1.0 DetailGeneral.qml
 DetailGraph 1.0 DetailGraph.qml
 DetailTabs 1.0 DetailTabs.qml
 DownloadCarousel 1.0 DownloadCarousel.qml
+DiskMonitor 1.0 DiskMonitor.qml
 DetailSidebar 1.0 DetailSidebar.qml
 PosterShelf 1.0 PosterShelf.qml
 DetailFiles 1.0 DetailFiles.qml

@@ -18,8 +18,10 @@
 #include <QUrl>
 #include <QFileInfo>
 #include <QSettings>
+#include <QSet>
 #include <QStandardPaths>
 #include <QDateTime>
+
 
 // Free space on the default save volume, polled at most every 5s (the status bar
 // binds to statsChanged, which ticks every second). Single source of truth for
@@ -283,6 +285,46 @@ QVariantList QmlSessionBridge::seedingTransfers() const
     return out;
 }
 
+// Torrents the user starred in the list. Walks every torrent rather than reusing
+// activeDownloads/seedingTransfers: a torrent that finished in an earlier run is
+// at 100% but isn't flagged completed, so it appears in neither of those.
+QVariantList QmlSessionBridge::starredTransfers() const
+{
+    const QStringList picks = QSettings().value(QStringLiteral("starredTorrents"))
+                                  .toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (picks.isEmpty()) return {};
+    const QSet<QString> want(picks.begin(), picks.end());
+
+    QVariantList out;
+    const int n = m_session->torrentCount();
+    for (int i = 0; i < n; ++i) {
+        const QString hash = m_session->torrentHashAt(i);
+        if (!want.contains(hash)) continue;
+        const TorrentInfo info = m_session->torrentAt(i);
+        QString poster;
+        if (m_resolver && m_resolver->hasCached(hash)) {
+            const auto meta = m_resolver->cached(hash);
+            if (!meta.posterPath.isEmpty())
+                poster = QUrl::fromLocalFile(meta.posterPath).toString();
+        }
+        const bool done = info.completed || info.progress >= 1.0f;
+        QVariantMap m;
+        m["infoHash"]  = hash;
+        m["title"]     = info.name;
+        m["progress"]  = done ? 1.0 : double(info.progress);
+        m["seeding"]   = done;      // the chip picks ↑ vs ↓ off this
+        m["paused"]    = info.paused;
+        m["downSpeed"] = formatSize(info.downloadRate) + QStringLiteral("/s");
+        m["upSpeed"]   = formatSize(info.uploadRate) + QStringLiteral("/s");
+        m["ratio"]     = QString::number(double(info.ratio), 'f', 2);
+        m["poster"]    = poster;
+        out << m;   // keep the user's own order, not an activity sort
+    }
+    return out;
+}
+
+// Continue watching / playing for the nav-rail slot when you're on the Downloads
+// tab (the downloads are already on screen there, so show what's resumable instead).
 // Continue watching / playing for the nav-rail slot when you're on the Downloads
 // tab (the downloads are already on screen there, so show what's resumable instead).
 QVariantList QmlSessionBridge::resumeItems() const

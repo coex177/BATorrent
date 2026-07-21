@@ -47,23 +47,12 @@ Rectangle {
         NumberAnimation { target: chipContent; property: "opacity"; to: 1; duration: 300; easing.type: Easing.OutCubic }
     }
 
-    readonly property var diskVolumes: (typeof session !== "undefined") ? session.diskVolumes : []
-    // gauge rotates through every disk (like the game card), pausing on each;
-    // default-save volume leads the list
-    property int diskIdx: 0
-    readonly property var diskShown: diskVolumes.length > 0
-        ? diskVolumes[Math.min(diskIdx, diskVolumes.length - 1)] : null
-    Timer {
-        interval: 5000; repeat: true
-        running: bar.diskVolumes.length > 1
-        onTriggered: bar.diskIdx = (bar.diskIdx + 1) % bar.diskVolumes.length
-    }
-    readonly property var diskWorst: {
-        var w = null
-        for (var i = 0; i < diskVolumes.length; ++i)
-            if (!w || diskVolumes[i].usedFraction > w.usedFraction) w = diskVolumes[i]
-        return w
-    }
+    // gauge rotates through the monitored disks (like the game card), pausing on
+    // each; default-save volume leads the list
+    readonly property DiskMonitor disk: DiskMonitor { id: dmon }
+    readonly property var diskVolumes: dmon.volumes
+    readonly property int diskIdx: dmon.idx
+    readonly property var diskShown: dmon.shown
 
     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.hair }
 
@@ -214,10 +203,12 @@ Rectangle {
                             Layout.alignment: Qt.AlignVCenter
                         }
                         Text {
+                            // a starred list mixes finished and downloading, so the
+                            // arrow follows the item, not the slot
                             text: !car.dlItem ? ""
                                   : car.slotResume ? i18n.t("hub_resume")
                                   : (car.dlItem.paused === true) ? i18n.t("state_paused")
-                                  : car.slotSeed ? ("↑ " + (car.dlItem.upSpeed || ""))
+                                  : (car.slotSeed || car.dlItem.seeding === true) ? ("↑ " + (car.dlItem.upSpeed || ""))
                                   : ("↓ " + (car.dlItem.downSpeed || ""))
                             color: Theme.accent
                             font.pixelSize: 10; font.family: Theme.fontSans; font.features: Theme.tnum
