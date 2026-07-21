@@ -335,12 +335,13 @@ void SessionManager::onFastresumeRejected(const lt::fastresume_rejected_alert *f
 
 void SessionManager::onTorrentChecked(const lt::torrent_checked_alert *tc)
 {
-    // Recheck completed — the torrent is back in a consistent state.
-    // Re-populate the status cache so queue/auto-pause logic sees the
-    // real state instead of the stale pre-recheck snapshot.
+    // Checking phase done — for a resumed torrent this is the fast
+    // resume-data validation (no hashing), not a full recheck. Re-populate the
+    // status cache so queue/auto-pause logic sees the real state instead of the
+    // stale pre-check snapshot.
     if (tc->handle.is_valid()) {
         m_statusCache[tc->handle] = tc->handle.status();
-        qDebug() << "[session] recheck completed for torrent";
+        qDebug() << "[session] checking phase done (resume validated) for torrent";
     }
 }
 
