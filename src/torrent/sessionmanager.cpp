@@ -460,7 +460,7 @@ void SessionManager::addTorrent(const QString &filePath, const QString &savePath
         // Temp path: download to temp dir, move to real path on finish
         if (!m_tempPath.isEmpty() && QDir(m_tempPath).exists()) {
             std::string hash = (std::ostringstream() << atp.ti->info_hashes().get_best()).str();
-            m_torrentIntendedPath[QString::fromStdString(hash)] = savePath;
+            setIntendedPath(QString::fromStdString(hash), savePath);
             atp.save_path = m_tempPath.toStdString();
         }
 
@@ -513,7 +513,7 @@ void SessionManager::addTorrentWithPriorities(const QString &filePath,
 
         if (!m_tempPath.isEmpty() && QDir(m_tempPath).exists()) {
             std::string hash = (std::ostringstream() << atp.ti->info_hashes().get_best()).str();
-            m_torrentIntendedPath[QString::fromStdString(hash)] = savePath;
+            setIntendedPath(QString::fromStdString(hash), savePath);
             atp.save_path = m_tempPath.toStdString();
         }
 
@@ -574,7 +574,7 @@ void SessionManager::addMagnet(const QString &uri, const QString &savePath,
         }
 
         if (!m_tempPath.isEmpty() && QDir(m_tempPath).exists()) {
-            m_torrentIntendedPath[realHash] = savePath;
+            setIntendedPath(realHash, savePath);
             atp.save_path = m_tempPath.toStdString();
         }
         applyStorageMode(atp);

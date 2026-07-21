@@ -456,6 +456,7 @@ private:
     void onTorrentError(const lt::torrent_error_alert *ea);
     void onFileError(const lt::file_error_alert *fe);
     void onStorageMovedFailed(const lt::storage_moved_failed_alert *sm);
+    void onStorageMoved(const lt::storage_moved_alert *sm);
     void onListenFailed(const lt::listen_failed_alert *lf);
     void onListenSucceeded();
     void onPortmapSucceeded();
@@ -606,6 +607,12 @@ private:
     // Handle -> absolute path of the old top-level folder awaiting cleanup after
     // a rename (libtorrent re-roots the files but leaves the empty folder).
     std::map<lt::torrent_handle, QString> m_renameOldRoots;
+    // Intended final path for a torrent still downloading in the temp dir, so the
+    // temp->final move can be recovered after a crash (the in-memory map alone was
+    // lost, orphaning finished torrents). Persisted; cleared once the move lands.
+    void setIntendedPath(const QString &hash, const QString &path);
+    void clearIntendedPath(const QString &hash);
+    void loadIntendedPaths();
     // Renames the user explicitly asked for (key "hash:fileIndex"), so a failed
     // one is surfaced while internal ".!bt" completion strips stay silent.
     // Filled by renameFile/renameTorrent, cleared on the rename result alert.

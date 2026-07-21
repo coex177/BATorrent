@@ -38,7 +38,7 @@ void SessionManager::setTorrentCategory(int index, const QString &category)
                              || st.state == lt::torrent_status::downloading_metadata);
             if (downloading) {
                 if (!m_tempPath.isEmpty() && QDir(m_tempPath).exists()) {
-                    m_torrentIntendedPath[hash] = catPath;
+                    setIntendedPath(hash, catPath);
                 } else {
                     m_torrents[index].move_storage(catPath.toStdString());
                 }

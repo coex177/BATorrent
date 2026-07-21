@@ -36,6 +36,7 @@ void SessionManager::processAlerts()
         if (auto *ea = lt::alert_cast<lt::torrent_error_alert>(a)) onTorrentError(ea);
         if (auto *fe = lt::alert_cast<lt::file_error_alert>(a)) onFileError(fe);
         if (auto *sm = lt::alert_cast<lt::storage_moved_failed_alert>(a)) onStorageMovedFailed(sm);
+        if (auto *smk = lt::alert_cast<lt::storage_moved_alert>(a)) onStorageMoved(smk);
         if (auto *lf = lt::alert_cast<lt::listen_failed_alert>(a)) onListenFailed(lf);
         if (lt::alert_cast<lt::listen_succeeded_alert>(a)) onListenSucceeded();
         if (lt::alert_cast<lt::portmap_alert>(a)) onPortmapSucceeded();
@@ -250,6 +251,15 @@ void SessionManager::onStorageMovedFailed(const lt::storage_moved_failed_alert *
     // disk; a recheck is the only safe recovery.
     if (sm->handle.is_valid())
         sm->handle.force_recheck();
+}
+
+void SessionManager::onStorageMoved(const lt::storage_moved_alert *sm)
+{
+    // The temp->final move landed, so the crash-recovery breadcrumb is done its
+    // job (kept until now so a crash mid-move could still be recovered).
+    if (sm->handle.is_valid())
+        clearIntendedPath(QString::fromStdString(
+            (std::ostringstream() << sm->handle.info_hashes().get_best()).str()));
 }
 
 void SessionManager::onListenFailed(const lt::listen_failed_alert *lf)

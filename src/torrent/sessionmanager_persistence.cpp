@@ -17,6 +17,7 @@
 #include <libtorrent/torrent_flags.hpp>
 #include <QSettings>
 #include <QDir>
+#include <QTimer>
 #include <QFile>
 #include <QSaveFile>
 #include <QFileInfo>
@@ -97,6 +98,32 @@ void SessionManager::stageResumeSave(const lt::torrent_handle &h)
     h.save_resume_data(lt::torrent_handle::save_info_dict);
     m_lastResumeSaveAt[h] = QDateTime::currentSecsSinceEpoch();
     ++m_resumeOutstanding;
+}
+
+// Intended-final-path breadcrumbs: persisted so a crash during the temp->final
+// move can be recovered next launch instead of orphaning the finished torrent.
+void SessionManager::setIntendedPath(const QString &hash, const QString &path)
+{
+    if (hash.isEmpty()) return;
+    m_torrentIntendedPath[hash] = path;
+    QSettings("BATorrent", "BATorrent").setValue("torrentIntendedPath/" + hash, path);
+}
+
+void SessionManager::clearIntendedPath(const QString &hash)
+{
+    if (hash.isEmpty()) return;
+    m_torrentIntendedPath.remove(hash);
+    QSettings("BATorrent", "BATorrent").remove("torrentIntendedPath/" + hash);
+}
+
+void SessionManager::loadIntendedPaths()
+{
+    QSettings s("BATorrent", "BATorrent");
+    s.beginGroup("torrentIntendedPath");
+    const QStringList keys = s.childKeys();
+    for (const QString &k : keys)
+        m_torrentIntendedPath[k] = s.value(k).toString();
+    s.endGroup();
 }
 
 void SessionManager::saveResumeData()
@@ -197,6 +224,7 @@ bool SessionManager::persistResumeAlert(const lt::save_resume_data_alert *rd)
 
 void SessionManager::loadResumeData()
 {
+    loadIntendedPaths();   // so stranded-torrent recovery below knows the destinations
     QDir dir(resumeDataDir());
     if (!dir.exists()) return;
 
@@ -250,45 +278,93 @@ void SessionManager::loadResumeData()
         // find it and re-downloads a torrent that's already complete. Point each
         // file at whichever variant has full-size data on disk; the recheck still
         // hash-validates, so a wrong guess just re-downloads (no data loss).
+        bool redirectedRecheck = false;
         if (atp.ti) {
-            const QString savePath = QString::fromStdString(atp.save_path);
             const auto &fs = atp.ti->files();
             const auto &prio = atp.file_priorities;
-            bool allWantedFullSize = fs.num_files() > 0;
-            for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
-                std::string eff = atp.renamed_files.count(i) ? atp.renamed_files[i]
-                                                             : fs.file_path(i);
-                const bool suffixed = eff.size() >= 4 && eff.compare(eff.size() - 4, 4, ".!bt") == 0;
-                const std::string base = suffixed ? eff.substr(0, eff.size() - 4) : eff;
-                const std::int64_t wantSize = fs.file_size(i);
-                const QString basePath = QDir(savePath).filePath(
-                    QDir::fromNativeSeparators(QString::fromStdString(base)));
-                const QFileInfo plain(basePath), bt(basePath + QStringLiteral(".!bt"));
-                std::string chosen = eff;
-                if (plain.isFile() && plain.size() == wantSize)   chosen = base;
-                else if (bt.isFile() && bt.size() == wantSize)    chosen = base + ".!bt";
-                else {
-                    // Only files the user actually wants count toward completeness.
-                    // Stream-while-watch sets every non-video file (e.g. YTS's
-                    // .txt/.jpg) to priority 0, so they never hit disk — without
-                    // this guard the torrent looks "incomplete" and re-finishes
-                    // (re-firing "download complete") on every launch.
-                    const std::size_t idx = static_cast<std::size_t>(static_cast<int>(i));
-                    const bool wanted = idx >= prio.size() || prio[idx] != lt::dont_download;
-                    if (wanted) allWantedFullSize = false;
+            const QString hashStr = QString::fromStdString(
+                (std::ostringstream() << atp.ti->info_hashes().get_best()).str());
+
+            struct Recon { bool allComplete; qint64 bytes; };   // bytes = wanted data present
+            // Point each file at whichever variant (X / X.!bt) has full-size data
+            // under `candidate`, writing the rename overrides into outMap. Reports
+            // whether every wanted file is present, plus how many wanted bytes are
+            // there (so recovery can pick the location holding the most data).
+            // Stream-while-watch sets skipped files to priority 0, so they don't count.
+            auto reconcileAt = [&](const QString &candidate,
+                                   std::map<lt::file_index_t, std::string> &outMap) -> Recon {
+                bool allWantedFullSize = fs.num_files() > 0;
+                qint64 bytes = 0;
+                for (lt::file_index_t i(0); i < fs.end_file(); ++i) {
+                    std::string eff = atp.renamed_files.count(i) ? atp.renamed_files[i]
+                                                                 : fs.file_path(i);
+                    const bool suffixed = eff.size() >= 4 && eff.compare(eff.size() - 4, 4, ".!bt") == 0;
+                    const std::string base = suffixed ? eff.substr(0, eff.size() - 4) : eff;
+                    const std::int64_t wantSize = fs.file_size(i);
+                    const QString basePath = QDir(candidate).filePath(
+                        QDir::fromNativeSeparators(QString::fromStdString(base)));
+                    const QFileInfo plain(basePath), bt(basePath + QStringLiteral(".!bt"));
+                    std::string chosen = eff;
+                    if (plain.isFile() && plain.size() == wantSize)   { chosen = base; bytes += wantSize; }
+                    else if (bt.isFile() && bt.size() == wantSize)    { chosen = base + ".!bt"; bytes += wantSize; }
+                    else {
+                        const std::size_t idx = static_cast<std::size_t>(static_cast<int>(i));
+                        const bool wanted = idx >= prio.size() || prio[idx] != lt::dont_download;
+                        if (wanted) allWantedFullSize = false;
+                    }
+                    if (chosen != eff) outMap[i] = chosen;
                 }
-                if (chosen != eff) atp.renamed_files[i] = chosen;
+                return { allWantedFullSize, bytes };
+            };
+
+            std::map<lt::file_index_t, std::string> mapping;
+            Recon here = reconcileAt(QString::fromStdString(atp.save_path), mapping);
+
+            // Stranded-torrent recovery: when the saved (temp) location isn't fully
+            // there — a crash interrupted the temp->final move — look where the data
+            // would have landed (the intended path we persisted, else the default
+            // save path). Redirect to whichever location holds the MOST of the
+            // torrent's data, even if slightly short (a size-mismatched cover etc.);
+            // the force_recheck below validates it and re-fetches only the gap.
+            // Data-safe: only points at data that already exists, never moves/deletes.
+            if (!here.allComplete) {
+                QStringList candidates;
+                if (m_torrentIntendedPath.contains(hashStr))
+                    candidates << m_torrentIntendedPath.value(hashStr);
+                candidates << QSettings("BATorrent", "BATorrent").value("lastSavePath").toString();
+                const QString cur = QString::fromStdString(atp.save_path);
+                Recon best = here; QString bestPath = cur;
+                for (const QString &cand : candidates) {
+                    if (cand.isEmpty() || cand == cur) continue;
+                    std::map<lt::file_index_t, std::string> m2;
+                    Recon r = reconcileAt(cand, m2);
+                    if (r.allComplete || r.bytes > best.bytes) {
+                        best = r; bestPath = cand; mapping.swap(m2);
+                        if (r.allComplete) break;
+                    }
+                }
+                if (bestPath != cur && best.bytes > here.bytes) {
+                    atp.save_path = bestPath.toStdString();
+                    here = best;
+                    redirectedRecheck = true;
+                    qWarning().noquote() << "[session] recovered stranded torrent" << hashStr
+                        << "-> save_path" << bestPath << (best.allComplete
+                            ? "(complete)" : "(partial — recheck will re-fetch the gap)");
+                }
             }
-            // All wanted files present at full size → complete for what the user
-            // kept. Load in seed_mode so libtorrent trusts it instead of
-            // re-checking/re-downloading on launch, and remember it as
-            // already-complete so the inevitable finish alert doesn't re-notify.
-            if (allWantedFullSize) {
+
+            for (const auto &kv : mapping) atp.renamed_files[kv.first] = kv.second;
+            if (here.allComplete) {
+                // Complete (at the saved path or a redirected one) → trust it in
+                // place, same as any complete torrent. Avoids re-hashing tens of GB
+                // just because the save_path changed; a bad piece is caught lazily.
                 atp.flags |= lt::torrent_flags::seed_mode;
-                const QString hash = QString::fromStdString(
-                    (std::ostringstream() << atp.ti->info_hashes().get_best()).str());
-                m_completedAtStartup.insert(hash);
+                m_completedAtStartup.insert(hashStr);
+                redirectedRecheck = false;   // complete → no recheck needed
             }
+            // A partial redirect (data mostly at the new path but short a bit) keeps
+            // redirectedRecheck = true so the force_recheck below rebuilds the piece
+            // map against the new location before resuming the small remainder.
         }
 
         lt::torrent_handle h;
@@ -315,8 +391,8 @@ void SessionManager::loadResumeData()
             m_magnetHashes[h] = hash;
             m_magnetAddedAt[h] = QDateTime::currentSecsSinceEpoch();
         }
-        if (recoveredFromCorrupt) {
-            h.force_recheck();
+        if (recoveredFromCorrupt || redirectedRecheck) {
+            h.force_recheck();   // validate the redirected/recovered data on disk
         }
         // Mark this handle so the first state_update_alert it generates runs
         // a ".!bt" strip pass for any files already complete on resume. We
