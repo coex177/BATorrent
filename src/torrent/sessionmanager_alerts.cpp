@@ -436,11 +436,29 @@ void SessionManager::onFileRenamed(const lt::file_renamed_alert *fr)
 
 void SessionManager::onFileRenameFailed(const lt::file_rename_failed_alert *rf)
 {
+    const QString reason = QString::fromStdString(rf->error.message());
+
+    // Distinguish our own internal ".!bt" strip (fires on completion: rename
+    // "X.!bt" -> "X") from a rename the user actually asked for. After a failed
+    // rename the stored name is unchanged, so if it still ends in ".!bt" this was
+    // the strip, and "File exists" just means the final file is already in place —
+    // benign, and NOT something to alarm the user about. Only real user renames
+    // (no ".!bt") get the warning + toast that this handler exists for.
+    if (rf->handle.is_valid()) {
+        if (auto ti = rf->handle.torrent_file()) {
+            const std::string cur = ti->files().file_path(rf->index);
+            if (cur.size() >= 4 && cur.compare(cur.size() - 4, 4, ".!bt") == 0) {
+                qDebug() << "[session] .!bt strip on completion hit an existing final"
+                         << "file, left as-is (index" << int(rf->index) << ")";
+                return;
+            }
+        }
+    }
+
     // The on-disk rename is async; libtorrent (or the OS) can reject a name the
     // in-memory file_storage already accepted, leaving the UI showing a name the
-    // disk never got. This used to be swallowed entirely. Log the real reason,
-    // and tell the user instead of letting display and disk silently diverge.
-    const QString reason = QString::fromStdString(rf->error.message());
+    // disk never got. Log the real reason, and tell the user instead of letting
+    // display and disk silently diverge.
     qWarning() << "[session] file rename FAILED, file index"
                << int(rf->index) << ":" << reason;
 
