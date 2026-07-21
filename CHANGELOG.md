@@ -1,5 +1,29 @@
 # Changelog
 
+## v4.7.0b-rc3 — fork build (coex177)
+
+Second fork build on upstream's `v4.7.0-rc3`. Adds top-bar controls, a real
+fix for a periodic UI stall, and honest rename-failure reporting.
+
+### Added
+- **Star a torrent to pin the top-bar chip to it.** A star sits at the left of
+  the list; star any torrents and the rotating chip cycles only those (whether
+  they're downloading or seeding) instead of the usual contextual pick. Star
+  nothing and it behaves as before.
+- **Disk gauge is now configurable.** In Settings you can choose which drives
+  the gauge rotates through (one, several, or all) and set the cycle speed for
+  both the torrent chip and the disk gauge independently.
+
+### Fixed
+- **Periodic ~1-second UI freeze on large libraries.** The continue-watching
+  chip rebuilt itself every 8 seconds by scanning every torrent's files through
+  libtorrent's piece picker, which stalled the whole UI for ~900ms on a big
+  library. It now reads the resume records directly (about 1ms for the same
+  result). This is an upstream bug, not fork-specific.
+- **On-disk rename failures are no longer silent.** If a rename can't be applied
+  to disk (for example, a name that already exists), you now get a toast with
+  the reason instead of the UI showing a name the file never actually got.
+
 ## v4.7.0a-rc3 — fork build (coex177)
 
 The [coex177 fork](https://github.com/coex177/BATorrent) rebased onto upstream's

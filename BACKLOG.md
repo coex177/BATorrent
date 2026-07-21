@@ -8,7 +8,21 @@ are tracked separately in the PR branches.
 - [x] **Scrollbar visibility setting** — let the user choose `AlwaysOn` vs
       `AsNeeded` for the list/grid scrollbars, instead of hard-coding
       `AsNeeded`. Applies to `LibraryView` (grid + list) and the detail panes
-      (Files/Peers/Trackers/Pieces).
+      (Files/Peers/Trackers/Pieces). Shipped in 4.7.0a-rc3.
+
+## Shipped in 4.7.0b-rc3
+
+- [x] **Star torrents to pin the top-bar chip** — starred torrents drive the
+      chip rotation. Backed by `session.starredTransfers` (walks all torrents,
+      since a finished-in-an-earlier-run torrent isn't in activeDownloads or
+      seedingTransfers).
+- [x] **Disk gauge selection + cycle speeds** — pick monitored drives
+      (one/several/all) and set chip/disk cycle intervals. Shared `DiskMonitor`
+      widget so the top bar and classic rail use one filter.
+- [x] **Resume-scan UI stall fix** — `resumeItems` no longer scans every
+      torrent's files each 8s (upstream bug; candidate for an upstream PR).
+- [x] **On-disk rename failures surfaced** — `file_rename_failed_alert` handled;
+      toast with the real reason instead of a silent display/disk divergence.
 
 ## Porting to 4.7 (branch `merge/upstream-4.7`)
 

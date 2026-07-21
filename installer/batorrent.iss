@@ -3,7 +3,7 @@
 
 ; Version is injected by CI via ISCC /DMyAppVersion=x.y.z; fallback for local builds.
 #ifndef MyAppVersion
-  #define MyAppVersion "4.7.0a-rc3"
+  #define MyAppVersion "4.7.0b-rc3"
 #endif
 ; Windows VERSIONINFO must be numeric (x.x.x.x); the displayed version may carry
 ; a suffix like "a". CI passes a numeric MyAppVersion so the fallback works;
