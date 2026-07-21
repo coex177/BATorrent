@@ -325,8 +325,10 @@ QVariantList QmlSessionBridge::starredTransfers() const
 
 // Continue watching / playing for the nav-rail slot when you're on the Downloads
 // tab (the downloads are already on screen there, so show what's resumable instead).
-// Continue watching / playing for the nav-rail slot when you're on the Downloads
-// tab (the downloads are already on screen there, so show what's resumable instead).
+// The chip's continue-watching slot. Driven straight off the resume records in
+// QSettings (the handful you've actually watched), NOT movieLibrary()/gameLibrary()
+// — those scan every torrent's files via libtorrent's piece picker, which stalled
+// the UI for ~900ms whenever this cache expired against a large library.
 QVariantList QmlSessionBridge::resumeItems() const
 {
     static QVariantList cached; static qint64 last = 0;
@@ -338,33 +340,76 @@ QVariantList QmlSessionBridge::resumeItems() const
         const qint64 h = s / 3600, m = (s % 3600) / 60;
         return h > 0 ? QStringLiteral("%1h %2m").arg(h).arg(m) : QStringLiteral("%1m").arg(m);
     };
+    auto posterFor = [this](const QString &hash) -> QString {
+        if (m_resolver && m_resolver->hasCached(hash)) {
+            const auto meta = m_resolver->cached(hash);
+            if (!meta.posterPath.isEmpty())
+                return QUrl::fromLocalFile(meta.posterPath).toString();
+        }
+        return {};
+    };
+
+    // hash -> row, built once. cachedStatus + hash string is ~0.2ms for the whole
+    // library; the old cost was the per-torrent filesAt() this now avoids.
+    QHash<QString, int> rowOf;
+    const int n = m_session->torrentCount();
+    for (int i = 0; i < n; ++i) {
+        const QString h = m_session->torrentHashAt(i);
+        if (!h.isEmpty()) rowOf.insert(h, i);
+    }
+
+    QSettings s;
     QVector<QPair<qint64, QVariantMap>> rows;   // (recency ms, item)
-    for (const QVariant &v : movieLibrary()) {
-        const QVariantMap mv = v.toMap();
-        if (mv.value(QStringLiteral("resumeMs")).toLongLong() <= 0) continue;
-        const double pct = mv.value(QStringLiteral("watchedPct")).toDouble();
+
+    // Movies: resume_<hash>_<fileIndex> = position ms, with _dur/_at companions.
+    const QStringList keys = s.allKeys();
+    for (const QString &key : keys) {
+        if (!key.startsWith(QLatin1String("resume_"))) continue;
+        if (key.endsWith(QLatin1String("_dur")) || key.endsWith(QLatin1String("_at"))) continue;
+        const qint64 resumeMs = s.value(key).toLongLong();
+        if (resumeMs <= 0) continue;
+        const int us = key.lastIndexOf(QLatin1Char('_'));
+        if (us <= 6) continue;
+        const QString hash = key.mid(7, us - 7);          // between "resume_" and the last "_"
+        bool okIdx = false;
+        const int fileIdx = key.mid(us + 1).toInt(&okIdx);
+        if (!okIdx) continue;
+        const auto it = rowOf.constFind(hash);
+        if (it == rowOf.constEnd()) continue;             // torrent removed since
+        const qint64 durMs    = s.value(key + QStringLiteral("_dur"), 0).toLongLong();
+        const qint64 resumeAt = s.value(key + QStringLiteral("_at"), 0).toLongLong();
+        const double pct = durMs > 0 ? double(resumeMs) / double(durMs) : 0.0;
         QVariantMap o;
-        o["kind"] = QStringLiteral("movie");
-        o["infoHash"]  = mv.value(QStringLiteral("infoHash"));
-        o["fileIndex"] = mv.value(QStringLiteral("fileIndex"));
-        o["title"]     = mv.value(QStringLiteral("title"));
-        o["poster"]    = mv.value(QStringLiteral("poster"));
+        o["kind"]      = QStringLiteral("movie");
+        o["infoHash"]  = hash;
+        o["fileIndex"] = fileIdx;
+        o["title"]     = m_session->torrentAt(*it).name;
+        o["poster"]    = posterFor(hash);
         o["progress"]  = pct;
         o["metric"]    = QString::number(int(pct * 100)) + QStringLiteral("%");
-        rows.append({ mv.value(QStringLiteral("resumeAt")).toLongLong(), o });
+        rows.append({ resumeAt, o });
     }
-    for (const QVariant &v : gameLibrary()) {
-        const QVariantMap g = v.toMap();
-        if (g.value(QStringLiteral("lastPlayed")).toLongLong() <= 0) continue;
+
+    // Games: gamePlayed/<hash> = last-played ms, gameSeconds/<hash> = total play.
+    s.beginGroup(QStringLiteral("gamePlayed"));
+    const QStringList gameHashes = s.childKeys();
+    s.endGroup();
+    for (const QString &hash : gameHashes) {
+        const qint64 lastPlayed = s.value(QStringLiteral("gamePlayed/") + hash, 0).toLongLong();
+        if (lastPlayed <= 0) continue;
+        const auto it = rowOf.constFind(hash);
+        if (it == rowOf.constEnd()) continue;
+        const qint64 secs = s.value(QStringLiteral("gameSeconds/") + hash, 0).toLongLong();
         QVariantMap o;
-        o["kind"] = QStringLiteral("game");
-        o["infoHash"] = g.value(QStringLiteral("infoHash"));
-        o["title"]    = g.value(QStringLiteral("title"));
-        o["poster"]   = g.value(QStringLiteral("poster"));
+        o["kind"]     = QStringLiteral("game");
+        o["infoHash"] = hash;
+        o["title"]    = m_session->torrentAt(*it).name;
+        o["poster"]   = posterFor(hash);
         o["progress"] = 0.0;
-        o["metric"]   = fmtPlay(g.value(QStringLiteral("playSeconds")).toLongLong());
-        rows.append({ g.value(QStringLiteral("lastPlayed")).toLongLong(), o });
+        o["metric"]   = fmtPlay(secs);
+        rows.append({ lastPlayed, o });
     }
+
     std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b){ return a.first > b.first; });
     QVariantList out;
     for (int i = 0; i < rows.size() && i < 8; ++i) out << rows[i].second;
