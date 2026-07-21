@@ -179,6 +179,9 @@ void SessionManager::renameFile(int torrentIndex, int fileIndex,
     if (!m_torrents[torrentIndex].is_valid()) return;
     m_torrents[torrentIndex].rename_file(
         lt::file_index_t(fileIndex), newRelativePath.toStdString());
+    const QString rhash = torrentHash(torrentIndex);
+    if (!rhash.isEmpty())
+        m_pendingUserRenames.insert(rhash + QLatin1Char(':') + QString::number(fileIndex));
 }
 
 void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
@@ -190,6 +193,11 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
     if (trimmed.isEmpty()) return;
 
     lt::torrent_handle &h = m_torrents[torrentIndex];
+    const QString uhash = torrentHash(torrentIndex);
+    auto markUser = [this, &uhash](int idx) {
+        if (!uhash.isEmpty())
+            m_pendingUserRenames.insert(uhash + QLatin1Char(':') + QString::number(idx));
+    };
 
     // On-disk rename — only possible once metadata is present.
     if (auto ti = h.torrent_file(); ti && ti->num_files() > 0) {
@@ -200,6 +208,7 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
         if (rootEnd == std::string::npos) {
             // Single file at the save-path root: the new name is the filename.
             h.rename_file(lt::file_index_t(0), trimmed.toStdString());
+            markUser(0);
         } else {
             // Re-root every file under the new top-level folder. The old root is
             // read from a live path, not fs.name(): the metadata name never
@@ -212,8 +221,10 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
                     std::string p = fs.file_path(i);
                     if (p.size() > oldRoot.size()
                         && p.compare(0, oldRoot.size(), oldRoot) == 0
-                        && (p[oldRoot.size()] == '/' || p[oldRoot.size()] == '\\'))
+                        && (p[oldRoot.size()] == '/' || p[oldRoot.size()] == '\\')) {
                         h.rename_file(i, newRoot + p.substr(oldRoot.size()));
+                        markUser(static_cast<int>(i));
+                    }
                 }
                 // libtorrent moves the files but leaves the old (now-empty)
                 // folder; file_renamed alerts prune it once everything has moved.
@@ -223,11 +234,10 @@ void SessionManager::renameTorrent(int torrentIndex, const QString &newName)
         }
     }
 
-    const QString hash = torrentHash(torrentIndex);
-    if (!hash.isEmpty()) {
-        m_customNames[hash] = trimmed;
+    if (!uhash.isEmpty()) {
+        m_customNames[uhash] = trimmed;
         QSettings s("BATorrent", "BATorrent");
-        s.setValue("torrentNames/" + hash, trimmed);
+        s.setValue("torrentNames/" + uhash, trimmed);
         s.sync();   // QSettings buffers; an unclean exit would drop the rename
     }
     emit torrentsUpdated();

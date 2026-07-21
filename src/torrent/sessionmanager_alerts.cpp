@@ -432,33 +432,36 @@ void SessionManager::onFileRenamed(const lt::file_renamed_alert *fr)
     auto it = m_renameOldRoots.find(fr->handle);
     if (it != m_renameOldRoots.end() && pruneEmptyDir(it->second))
         m_renameOldRoots.erase(it);
+    if (fr->handle.is_valid()) {
+        const QString hash = QString::fromStdString(
+            (std::ostringstream() << fr->handle.info_hashes().get_best()).str());
+        m_pendingUserRenames.remove(hash + QLatin1Char(':') + QString::number(int(fr->index)));
+    }
 }
 
 void SessionManager::onFileRenameFailed(const lt::file_rename_failed_alert *rf)
 {
     const QString reason = QString::fromStdString(rf->error.message());
 
-    // Distinguish our own internal ".!bt" strip (fires on completion: rename
-    // "X.!bt" -> "X") from a rename the user actually asked for. After a failed
-    // rename the stored name is unchanged, so if it still ends in ".!bt" this was
-    // the strip, and "File exists" just means the final file is already in place —
-    // benign, and NOT something to alarm the user about. Only real user renames
-    // (no ".!bt") get the warning + toast that this handler exists for.
-    if (rf->handle.is_valid()) {
-        if (auto ti = rf->handle.torrent_file()) {
-            const std::string cur = ti->files().file_path(rf->index);
-            if (cur.size() >= 4 && cur.compare(cur.size() - 4, 4, ".!bt") == 0) {
-                qDebug() << "[session] .!bt strip on completion hit an existing final"
-                         << "file, left as-is (index" << int(rf->index) << ")";
-                return;
-            }
-        }
+    // Only surface renames the user actually asked for. libtorrent updates the
+    // in-memory name to the target optimistically, so we can't tell an internal
+    // ".!bt" completion strip from a user rename by inspecting the file name after
+    // the fact — instead we match against the marker renameFile/renameTorrent set.
+    // The strips that run on completion (rename "X.!bt" -> "X", which fails with
+    // "File exists" when the final file is already there) are never marked, so
+    // they stay quiet instead of firing a toast on every finished torrent.
+    QString hash;
+    if (rf->handle.is_valid())
+        hash = QString::fromStdString(
+            (std::ostringstream() << rf->handle.info_hashes().get_best()).str());
+    if (!m_pendingUserRenames.remove(hash + QLatin1Char(':') + QString::number(int(rf->index)))) {
+        qDebug() << "[session] internal rename failed (index"
+                 << int(rf->index) << "):" << reason;
+        return;
     }
 
-    // The on-disk rename is async; libtorrent (or the OS) can reject a name the
-    // in-memory file_storage already accepted, leaving the UI showing a name the
-    // disk never got. Log the real reason, and tell the user instead of letting
-    // display and disk silently diverge.
+    // A rename the user started genuinely failed — log the real reason and tell
+    // them, instead of letting the displayed name and the disk silently diverge.
     qWarning() << "[session] file rename FAILED, file index"
                << int(rf->index) << ":" << reason;
 

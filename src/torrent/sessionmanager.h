@@ -606,6 +606,10 @@ private:
     // Handle -> absolute path of the old top-level folder awaiting cleanup after
     // a rename (libtorrent re-roots the files but leaves the empty folder).
     std::map<lt::torrent_handle, QString> m_renameOldRoots;
+    // Renames the user explicitly asked for (key "hash:fileIndex"), so a failed
+    // one is surfaced while internal ".!bt" completion strips stay silent.
+    // Filled by renameFile/renameTorrent, cleared on the rename result alert.
+    QSet<QString> m_pendingUserRenames;
     // Hash -> clean-title + type cover hint (game catalog / Stremio), consumed once.
     QMap<QString, CoverHint> m_coverHints;
 
