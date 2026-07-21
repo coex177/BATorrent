@@ -308,6 +308,7 @@
   "empty_search_btn": "Search",
   "empty_title": "No torrents yet",
   "error_disk_full": "Disk full — all downloads paused. Free up space and resume manually.",
+  "error_rename_failed": "Couldn't rename on disk: %1. The name shown may not match the file.",
   "extract_failed": "Extraction failed (wrong password or missing 7-Zip/WinRAR): %1",
   "export_success": "Settings exported successfully.",
   "file_priority": "Priority",

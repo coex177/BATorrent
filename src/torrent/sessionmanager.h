@@ -470,6 +470,7 @@ private:
     void onMetadataReceived(const lt::metadata_received_alert *mr);
     void onFileCompleted(const lt::file_completed_alert *fc);
     void onFileRenamed(const lt::file_renamed_alert *fr);
+    void onFileRenameFailed(const lt::file_rename_failed_alert *rf);
 #ifdef BAT_LIBTORRENT_FORK
     void onExternalIp(const lt::external_ip_alert *ea);
     // Installs the same-country peer-ranking classifier once both our external

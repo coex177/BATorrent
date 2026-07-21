@@ -50,6 +50,7 @@ void SessionManager::processAlerts()
         if (auto *mr = lt::alert_cast<lt::metadata_received_alert>(a)) onMetadataReceived(mr);
         if (auto *fc = lt::alert_cast<lt::file_completed_alert>(a)) onFileCompleted(fc);
         if (auto *fn = lt::alert_cast<lt::file_renamed_alert>(a)) onFileRenamed(fn);
+        if (auto *rf = lt::alert_cast<lt::file_rename_failed_alert>(a)) onFileRenameFailed(rf);
 #ifdef BAT_LIBTORRENT_FORK
         if (auto *xi = lt::alert_cast<lt::external_ip_alert>(a)) onExternalIp(xi);
 #endif
@@ -430,6 +431,26 @@ void SessionManager::onFileRenamed(const lt::file_renamed_alert *fr)
     auto it = m_renameOldRoots.find(fr->handle);
     if (it != m_renameOldRoots.end() && pruneEmptyDir(it->second))
         m_renameOldRoots.erase(it);
+}
+
+void SessionManager::onFileRenameFailed(const lt::file_rename_failed_alert *rf)
+{
+    // The on-disk rename is async; libtorrent (or the OS) can reject a name the
+    // in-memory file_storage already accepted, leaving the UI showing a name the
+    // disk never got. This used to be swallowed entirely. Log the real reason,
+    // and tell the user instead of letting display and disk silently diverge.
+    const QString reason = QString::fromStdString(rf->error.message());
+    qWarning() << "[session] file rename FAILED, file index"
+               << int(rf->index) << ":" << reason;
+
+    // A folder rename fires one alert per file; coalesce so 50 failing files
+    // aren't 50 toasts. Log every one above, toast at most one per 3s.
+    static qint64 lastEmit = 0;
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (now - lastEmit >= 3) {
+        lastEmit = now;
+        emit torrentError(tr_("error_rename_failed").arg(reason));
+    }
 }
 
 #ifdef BAT_LIBTORRENT_FORK
