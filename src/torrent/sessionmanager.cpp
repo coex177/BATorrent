@@ -1729,10 +1729,15 @@ void SessionManager::scanWatchedFolder()
         QString savePath = s.value("lastSavePath",
             QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
         addTorrent(path, savePath);
-        // Move the .torrent to a "processed" subfolder to avoid re-adding.
-        // rename() fails silently if a same-named file was archived before —
-        // the leftover then re-adds the torrent on every scan (reported as
-        // removed torrents "coming back"). Clear the slot first.
+        // addTorrent already ran the post-add disposition (disposeOfSourceTorrent):
+        // if "delete after adding" or a move folder is set, the source .torrent is
+        // gone now, so there's nothing to archive and the .processed move below
+        // would just fail on a missing file. Only fall back to .processed when the
+        // file is still here (default disposition) — that's what stops a re-add.
+        if (!QFileInfo::exists(path)) continue;
+        // Move the leftover .torrent to a "processed" subfolder to avoid re-adding.
+        // Clear a stale same-named archive first, or the move fails and the
+        // leftover re-adds the torrent on every scan ("removed torrents coming back").
         QDir processed(dir.filePath(".processed"));
         if (!processed.exists()) processed.mkpath(".");
         QFile::remove(processed.filePath(f));
